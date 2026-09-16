@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/ErenKarakus1/Trading-Engine/internal/domain"
@@ -13,6 +14,7 @@ import (
 	"github.com/ErenKarakus1/Trading-Engine/internal/ratelimit"
 	"github.com/ErenKarakus1/Trading-Engine/internal/risk"
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 )
 
 func init() {
@@ -154,6 +156,51 @@ func TestGetTrades(t *testing.T) {
 	}
 	if len(trades) != 1 || trades[0].Quantity != 3 {
 		t.Fatalf("trades = %+v, want one trade quantity 3", trades)
+	}
+}
+
+func TestOrderBookWebSocketReceivesSnapshotAndEvents(t *testing.T) {
+	server := newTestServer(nil, nil)
+	httpServer := httptest.NewServer(server.Router())
+	defer httpServer.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/orderbook/BTC-USD"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	var snapshot websocketMessage
+	if err := conn.ReadJSON(&snapshot); err != nil {
+		t.Fatalf("ReadJSON(snapshot) error = %v", err)
+	}
+	if snapshot.Type != "snapshot" || snapshot.Symbol != "BTC-USD" || snapshot.Book == nil {
+		t.Fatalf("snapshot = %+v", snapshot)
+	}
+
+	response := postJSON(t, server, "/orders", orderRequest{
+		AccountID: "account-1",
+		ID:        "buy-1",
+		Symbol:    "BTC-USD",
+		Side:      domain.SideBuy,
+		Type:      domain.OrderTypeLimit,
+		Price:     100,
+		Quantity:  5,
+	})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusCreated)
+	}
+
+	var message websocketMessage
+	if err := conn.ReadJSON(&message); err != nil {
+		t.Fatalf("ReadJSON(events) error = %v", err)
+	}
+	if message.Type != "events" || message.Symbol != "BTC-USD" {
+		t.Fatalf("message = %+v", message)
+	}
+	if len(message.Events) != 2 {
+		t.Fatalf("len(Events) = %d, want 2", len(message.Events))
 	}
 }
 

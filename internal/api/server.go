@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"net/http"
 	"sync"
 
 	"github.com/ErenKarakus1/Trading-Engine/internal/domain"
@@ -10,7 +11,7 @@ import (
 	"github.com/ErenKarakus1/Trading-Engine/internal/ratelimit"
 	"github.com/ErenKarakus1/Trading-Engine/internal/risk"
 	"github.com/gin-gonic/gin"
-	"net/http"
+	"github.com/gorilla/websocket"
 )
 
 type RateLimiter interface {
@@ -25,11 +26,13 @@ type Server struct {
 	matcher     *matching.Engine
 	riskChecker RiskChecker
 	limiter     RateLimiter
+	upgrader    websocket.Upgrader
 
 	mu       sync.Mutex
 	accounts map[risk.AccountID]risk.Account
 	orders   map[domain.OrderID]orderRecord
 	trades   []matching.Trade
+	clients  map[domain.Symbol]map[*websocket.Conn]struct{}
 }
 
 type orderRecord struct {
@@ -48,8 +51,10 @@ func NewServer(matcher *matching.Engine, riskChecker RiskChecker, limiter RateLi
 		matcher:     matcher,
 		riskChecker: riskChecker,
 		limiter:     limiter,
+		upgrader:    websocket.Upgrader{},
 		accounts:    make(map[risk.AccountID]risk.Account),
 		orders:      make(map[domain.OrderID]orderRecord),
+		clients:     make(map[domain.Symbol]map[*websocket.Conn]struct{}),
 	}
 	for _, account := range accounts {
 		server.accounts[account.ID] = account
@@ -64,6 +69,7 @@ func (s *Server) Router() *gin.Engine {
 	router.GET("/orders/:id", s.handleGetOrder)
 	router.GET("/orderbook/:symbol", s.handleGetOrderBook)
 	router.GET("/trades/:symbol", s.handleGetTrades)
+	router.GET("/ws/orderbook/:symbol", s.handleOrderBookSocket)
 	return router
 }
 
@@ -115,6 +121,10 @@ func (s *Server) handlePostOrder(c *gin.Context) {
 		return
 	}
 	s.recordSubmit(result)
+	s.broadcast(result.Accepted.Symbol, websocketMessage{
+		Type:   "events",
+		Events: result.Events,
+	})
 
 	c.JSON(http.StatusCreated, result)
 }
@@ -138,6 +148,10 @@ func (s *Server) handleDeleteOrder(c *gin.Context) {
 		return
 	}
 	s.recordCancel(result)
+	s.broadcast(record.Order.Symbol, websocketMessage{
+		Type:   "events",
+		Events: []matching.Event{result.Event},
+	})
 
 	c.JSON(http.StatusOK, result)
 }
@@ -188,10 +202,40 @@ func (s *Server) handleGetTrades(c *gin.Context) {
 	c.JSON(http.StatusOK, trades)
 }
 
+func (s *Server) handleOrderBookSocket(c *gin.Context) {
+	symbol := domain.Symbol(c.Param("symbol"))
+	if symbol == "" {
+		writeError(c, http.StatusBadRequest, "missing_symbol")
+		return
+	}
+
+	conn, err := s.upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		return
+	}
+	s.addClient(symbol, conn)
+	defer s.removeClient(symbol, conn)
+	defer conn.Close()
+
+	_ = conn.WriteJSON(s.orderBookSnapshot(symbol))
+	for {
+		if _, _, err := conn.NextReader(); err != nil {
+			return
+		}
+	}
+}
+
 type orderBookResponse struct {
 	Symbol  domain.Symbol         `json:"symbol"`
 	BestBid *orderbook.PriceLevel `json:"best_bid,omitempty"`
 	BestAsk *orderbook.PriceLevel `json:"best_ask,omitempty"`
+}
+
+type websocketMessage struct {
+	Type   string             `json:"type"`
+	Symbol domain.Symbol      `json:"symbol,omitempty"`
+	Book   *orderBookResponse `json:"book,omitempty"`
+	Events []matching.Event   `json:"events,omitempty"`
 }
 
 func (s *Server) account(id risk.AccountID) (risk.Account, bool) {
@@ -262,6 +306,59 @@ func (s *Server) recordCancel(result matching.CancelResult) {
 	record.Remaining = 0
 	record.Status = "canceled"
 	s.orders[result.Order.ID] = record
+}
+
+func (s *Server) orderBookSnapshot(symbol domain.Symbol) websocketMessage {
+	book := orderBookResponse{Symbol: symbol}
+	if bid, ok := s.matcher.BestBid(symbol); ok {
+		book.BestBid = &bid
+	}
+	if ask, ok := s.matcher.BestAsk(symbol); ok {
+		book.BestAsk = &ask
+	}
+	return websocketMessage{
+		Type:   "snapshot",
+		Symbol: symbol,
+		Book:   &book,
+	}
+}
+
+func (s *Server) addClient(symbol domain.Symbol, conn *websocket.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.clients[symbol] == nil {
+		s.clients[symbol] = make(map[*websocket.Conn]struct{})
+	}
+	s.clients[symbol][conn] = struct{}{}
+}
+
+func (s *Server) removeClient(symbol domain.Symbol, conn *websocket.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.clients[symbol], conn)
+	if len(s.clients[symbol]) == 0 {
+		delete(s.clients, symbol)
+	}
+}
+
+func (s *Server) broadcast(symbol domain.Symbol, message websocketMessage) {
+	message.Symbol = symbol
+
+	s.mu.Lock()
+	clients := make([]*websocket.Conn, 0, len(s.clients[symbol]))
+	for client := range s.clients[symbol] {
+		clients = append(clients, client)
+	}
+	s.mu.Unlock()
+
+	for _, client := range clients {
+		if err := client.WriteJSON(message); err != nil {
+			s.removeClient(symbol, client)
+			_ = client.Close()
+		}
+	}
 }
 
 func writeRateLimitError(c *gin.Context, err error) {

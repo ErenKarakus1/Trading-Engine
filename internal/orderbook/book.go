@@ -83,6 +83,30 @@ func (b *Book) BestAsk() (PriceLevel, bool) {
 	return b.sells.best()
 }
 
+func (b *Book) BestOrder(side domain.Side) (Order, bool) {
+	return b.side(side).bestOrder()
+}
+
+func (b *Book) Reduce(orderID domain.OrderID, quantity domain.Quantity) (Order, error) {
+	if quantity <= 0 {
+		return Order{}, ErrInvalidOrder
+	}
+
+	ref, exists := b.orderRef[orderID]
+	if !exists {
+		return Order{}, ErrOrderNotFound
+	}
+
+	side := b.side(ref.side)
+	order, removed := side.reduce(ref.price, ref.index, quantity)
+	if removed {
+		delete(b.orderRef, orderID)
+		b.reindexLevel(ref.side, ref.price, ref.index)
+	}
+
+	return order, nil
+}
+
 func (b *Book) side(side domain.Side) *bookSide {
 	if side == domain.SideBuy {
 		return &b.buys
@@ -172,6 +196,29 @@ func (s *bookSide) best() (PriceLevel, bool) {
 
 	level := s.levels[s.prices[0]]
 	return level.snapshot(), true
+}
+
+func (s *bookSide) bestOrder() (Order, bool) {
+	if len(s.prices) == 0 {
+		return Order{}, false
+	}
+
+	level := s.levels[s.prices[0]]
+	if len(level.orders) == 0 {
+		return Order{}, false
+	}
+
+	return level.orders[0], true
+}
+
+func (s *bookSide) reduce(price domain.Money, index int, quantity domain.Quantity) (Order, bool) {
+	level := s.levels[price]
+	if quantity >= level.orders[index].Quantity {
+		return s.remove(price, index), true
+	}
+
+	level.orders[index].Quantity -= quantity
+	return level.orders[index], false
 }
 
 func (s *bookSide) insertPrice(price domain.Money) {

@@ -10,3 +10,10 @@ const (
 	SideBuy  Side = "buy"
 	SideSell Side = "sell"
 )
+
+type OrderType string
+
+const (
+	OrderTypeLimit  OrderType = "limit"
+	OrderTypeMarket OrderType = "market"
+)

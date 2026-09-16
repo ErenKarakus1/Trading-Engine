@@ -8,7 +8,12 @@ import (
 	"github.com/ErenKarakus1/Trading-Engine/internal/orderbook"
 )
 
-var ErrInvalidOrder = errors.New("invalid order")
+var (
+	ErrInvalidOrder = errors.New("invalid order")
+	ErrInvalidEvent = errors.New("invalid event")
+	ErrEventGap     = errors.New("event sequence gap")
+	ErrEventOrder   = errors.New("event sequence out of order")
+)
 
 type Order struct {
 	ID       domain.OrderID
@@ -176,6 +181,32 @@ func (e *Engine) BestAsk(symbol domain.Symbol) (orderbook.PriceLevel, bool) {
 	return symbolBook.book.BestAsk()
 }
 
+func (e *Engine) Replay(events []Event) error {
+	var last domain.Sequence
+	for _, event := range events {
+		if event.Sequence <= 0 {
+			return ErrInvalidEvent
+		}
+		if last != 0 {
+			if event.Sequence < last {
+				return ErrEventOrder
+			}
+			if event.Sequence > last+1 {
+				return ErrEventGap
+			}
+		}
+		if err := e.apply(event); err != nil {
+			return err
+		}
+		last = event.Sequence
+	}
+
+	if last > e.currentSequence() {
+		e.setSequence(last)
+	}
+	return nil
+}
+
 func (e *Engine) symbolBook(symbol domain.Symbol) *symbolBook {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -194,6 +225,20 @@ func (e *Engine) sequence() domain.Sequence {
 
 	e.nextSequence++
 	return e.nextSequence
+}
+
+func (e *Engine) currentSequence() domain.Sequence {
+	e.seqMu.Lock()
+	defer e.seqMu.Unlock()
+
+	return e.nextSequence
+}
+
+func (e *Engine) setSequence(sequence domain.Sequence) {
+	e.seqMu.Lock()
+	defer e.seqMu.Unlock()
+
+	e.nextSequence = sequence
 }
 
 func validate(order Order) error {
@@ -267,4 +312,50 @@ func submitEvents(result Result) []Event {
 	}
 
 	return events
+}
+
+func (e *Engine) apply(event Event) error {
+	switch event.Type {
+	case domain.EventTypeOrderAccepted:
+		if event.Order == nil {
+			return ErrInvalidEvent
+		}
+		return nil
+	case domain.EventTypeOrderRested:
+		if event.Order == nil {
+			return ErrInvalidEvent
+		}
+		symbolBook := e.symbolBook(event.Order.Symbol)
+		symbolBook.mu.Lock()
+		defer symbolBook.mu.Unlock()
+
+		return symbolBook.book.Add(orderbook.Order{
+			ID:       event.Order.ID,
+			Side:     event.Order.Side,
+			Price:    event.Order.Price,
+			Quantity: event.Order.Quantity,
+		})
+	case domain.EventTypeTradeExecuted:
+		if event.Trade == nil {
+			return ErrInvalidEvent
+		}
+		symbolBook := e.symbolBook(event.Trade.Symbol)
+		symbolBook.mu.Lock()
+		defer symbolBook.mu.Unlock()
+
+		_, err := symbolBook.book.Reduce(event.Trade.MakerOrderID, event.Trade.Quantity)
+		return err
+	case domain.EventTypeOrderCanceled:
+		if event.Cancel == nil {
+			return ErrInvalidEvent
+		}
+		symbolBook := e.symbolBook(event.Cancel.Symbol)
+		symbolBook.mu.Lock()
+		defer symbolBook.mu.Unlock()
+
+		_, err := symbolBook.book.Cancel(event.Cancel.ID)
+		return err
+	default:
+		return ErrInvalidEvent
+	}
 }

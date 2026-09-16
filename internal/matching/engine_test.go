@@ -184,6 +184,63 @@ func TestRejectedOrdersDoNotConsumeSequenceNumbers(t *testing.T) {
 	}
 }
 
+func TestReplayRebuildsBookState(t *testing.T) {
+	source := NewEngine()
+	var events []Event
+
+	events = append(events, mustSubmit(t, source, limit("sell-1", domain.SideSell, 100, 10)).Events...)
+	events = append(events, mustSubmit(t, source, limit("sell-2", domain.SideSell, 101, 5)).Events...)
+	events = append(events, mustSubmit(t, source, limit("buy-1", domain.SideBuy, 100, 4)).Events...)
+	cancelResult, err := source.Cancel("BTC-USD", "sell-2")
+	if err != nil {
+		t.Fatalf("Cancel() error = %v", err)
+	}
+	events = append(events, cancelResult.Event)
+
+	replayed := NewEngine()
+	if err := replayed.Replay(events); err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	sourceAsk, sourceOK := source.BestAsk("BTC-USD")
+	replayedAsk, replayedOK := replayed.BestAsk("BTC-USD")
+	if sourceOK != replayedOK {
+		t.Fatalf("BestAsk ok mismatch: source %v replayed %v", sourceOK, replayedOK)
+	}
+	if sourceAsk != replayedAsk {
+		t.Fatalf("BestAsk mismatch: source %+v replayed %+v", sourceAsk, replayedAsk)
+	}
+}
+
+func TestReplayContinuesSequenceNumbers(t *testing.T) {
+	source := NewEngine()
+	result := mustSubmit(t, source, limit("buy-1", domain.SideBuy, 100, 1))
+
+	replayed := NewEngine()
+	if err := replayed.Replay(result.Events); err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	next, err := replayed.Submit(limit("buy-2", domain.SideBuy, 99, 1))
+	if err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+	if next.Sequence != 2 {
+		t.Fatalf("Sequence = %d, want 2", next.Sequence)
+	}
+}
+
+func TestReplayRejectsSequenceGap(t *testing.T) {
+	engine := NewEngine()
+	err := engine.Replay([]Event{
+		{Type: domain.EventTypeOrderAccepted, Sequence: 1, Order: &Order{ID: "buy-1", Symbol: "BTC-USD", Side: domain.SideBuy, Type: domain.OrderTypeLimit, Price: 100, Quantity: 1}},
+		{Type: domain.EventTypeOrderAccepted, Sequence: 3, Order: &Order{ID: "buy-2", Symbol: "BTC-USD", Side: domain.SideBuy, Type: domain.OrderTypeLimit, Price: 100, Quantity: 1}},
+	})
+	if err != ErrEventGap {
+		t.Fatalf("Replay() error = %v, want %v", err, ErrEventGap)
+	}
+}
+
 func TestConcurrentSubmissionsAreSafe(t *testing.T) {
 	engine := NewEngine()
 	const orders = 100
@@ -255,11 +312,13 @@ func market(id domain.OrderID, side domain.Side, quantity domain.Quantity) Order
 	}
 }
 
-func mustSubmit(t *testing.T, engine *Engine, order Order) {
+func mustSubmit(t *testing.T, engine *Engine, order Order) Result {
 	t.Helper()
-	if _, err := engine.Submit(order); err != nil {
+	result, err := engine.Submit(order)
+	if err != nil {
 		t.Fatalf("Submit() error = %v", err)
 	}
+	return result
 }
 
 func assertTrades(t *testing.T, got []Trade, want ...Trade) {

@@ -33,6 +33,15 @@ function App() {
   const [trades, setTrades] = useState([]);
   const [events, setEvents] = useState([]);
   const [error, setError] = useState("");
+  const [ticket, setTicket] = useState({
+    accountId: "demo",
+    side: "buy",
+    type: "limit",
+    price: "101",
+    quantity: "1",
+  });
+  const [orderStatus, setOrderStatus] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const socketRef = useRef(null);
 
   const refresh = useCallback(async (activeSymbol) => {
@@ -90,6 +99,46 @@ function App() {
     }
   }, [symbolInput]);
 
+  const updateTicket = useCallback((key, value) => {
+    setTicket((current) => ({ ...current, [key]: value }));
+  }, []);
+
+  const submitOrder = useCallback(async (event) => {
+    event.preventDefault();
+    setSubmitting(true);
+    setOrderStatus("");
+
+    const order = {
+      account_id: ticket.accountId.trim(),
+      id: `ui-${Date.now()}`,
+      symbol,
+      side: ticket.side,
+      type: ticket.type,
+      quantity: Number(ticket.quantity),
+    };
+    if (ticket.type === "limit") {
+      order.price = Number(ticket.price);
+    }
+
+    try {
+      const response = await fetch("/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(order),
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        throw new Error(body.error || `order ${response.status}`);
+      }
+      setOrderStatus(`accepted ${order.id}`);
+      await refresh(symbol);
+    } catch (err) {
+      setOrderStatus(err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [refresh, symbol, ticket]);
+
   const bid = field(book, "best_bid", "BestBid");
   const ask = field(book, "best_ask", "BestAsk");
   const bestBid = field(bid, "price", "Price");
@@ -124,7 +173,9 @@ function App() {
               }}
             />
           </div>
-          <button type="button" onClick={loadSymbol}>Load</button>
+          <button type="button" onClick={loadSymbol} aria-label="Load symbol">
+            <span className="button-label">Load</span>
+          </button>
           <span className={`connection ${status}`}>{statusLabel(status)}</span>
         </div>
       </header>
@@ -132,6 +183,17 @@ function App() {
       {error ? <div className="notice">{error}</div> : null}
 
       <main className="grid">
+        <section className="panel ticket-panel">
+          <PanelHeader title="Order Ticket" meta={symbol} />
+          <OrderTicket
+            ticket={ticket}
+            submitting={submitting}
+            status={orderStatus}
+            onChange={updateTicket}
+            onSubmit={submitOrder}
+          />
+        </section>
+
         <section className="panel book-panel">
           <PanelHeader title="Order Book" meta={`sequence ${formatNumber(lastSequence)}`} />
           <div className="metrics">
@@ -157,6 +219,86 @@ function App() {
         </section>
       </main>
     </div>
+  );
+}
+
+function OrderTicket({ ticket, submitting, status, onChange, onSubmit }) {
+  return (
+    <form className="ticket" onSubmit={onSubmit}>
+      <div className="segmented">
+        <button
+          className={ticket.side === "buy" ? "active buy-mode" : ""}
+          type="button"
+          aria-label="Select buy side"
+          onClick={() => onChange("side", "buy")}
+        >
+          <span className="button-label">Buy</span>
+        </button>
+        <button
+          className={ticket.side === "sell" ? "active sell-mode" : ""}
+          type="button"
+          aria-label="Select sell side"
+          onClick={() => onChange("side", "sell")}
+        >
+          <span className="button-label">Sell</span>
+        </button>
+      </div>
+
+      <div className="field-row">
+        <label htmlFor="account">Account</label>
+        <input
+          id="account"
+          value={ticket.accountId}
+          autoComplete="off"
+          onChange={(event) => onChange("accountId", event.target.value)}
+        />
+      </div>
+
+      <div className="field-row">
+        <label htmlFor="order-type">Type</label>
+        <select
+          id="order-type"
+          value={ticket.type}
+          onChange={(event) => onChange("type", event.target.value)}
+        >
+          <option value="limit">Limit</option>
+          <option value="market">Market</option>
+        </select>
+      </div>
+
+      <div className="field-grid">
+        <div className="field-row">
+          <label htmlFor="price">Price</label>
+          <input
+            id="price"
+            type="number"
+            min="1"
+            step="1"
+            value={ticket.price}
+            disabled={ticket.type === "market"}
+            onChange={(event) => onChange("price", event.target.value)}
+          />
+        </div>
+        <div className="field-row">
+          <label htmlFor="quantity">Quantity</label>
+          <input
+            id="quantity"
+            type="number"
+            min="1"
+            step="1"
+            value={ticket.quantity}
+            onChange={(event) => onChange("quantity", event.target.value)}
+          />
+        </div>
+      </div>
+
+      <button className={`submit-order ${ticket.side}-action`} type="submit" disabled={submitting} aria-label="Submit order">
+        <span className="button-label">
+          {submitting ? "Sending" : `${ticket.side === "buy" ? "Buy" : "Sell"} Order`}
+        </span>
+      </button>
+      {status ? <div className="ticket-status">{status}</div> : null}
+    </form>
   );
 }
 

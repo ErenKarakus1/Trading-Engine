@@ -29,7 +29,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -83,7 +84,8 @@ label {
   text-transform: uppercase;
 }
 
-input {
+input,
+select {
   width: 148px;
   height: 36px;
   border: 1px solid var(--line-strong);
@@ -93,12 +95,21 @@ input {
   background: #fff;
 }
 
-input:focus {
+input:focus,
+select:focus {
   border-color: var(--focus);
   outline: 3px solid rgba(31, 95, 191, 0.14);
 }
 
+input:disabled {
+  color: var(--muted);
+  background: #eef2f7;
+}
+
 button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   height: 36px;
   border: 1px solid var(--focus);
   border-radius: 6px;
@@ -111,6 +122,15 @@ button {
 
 button:hover {
   background: #184f9f;
+}
+
+.button-label {
+  display: inline-block;
+  overflow: hidden;
+  color: inherit;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .connection {
@@ -157,10 +177,10 @@ button:hover {
 
 .grid {
   display: grid;
-  grid-template-columns: minmax(320px, 0.95fr) minmax(420px, 1.2fr);
+  grid-template-columns: minmax(280px, 0.65fr) minmax(320px, 0.9fr) minmax(420px, 1.15fr);
   grid-template-areas:
-    "book tape"
-    "events events";
+    "ticket book tape"
+    "events events events";
   gap: 16px;
   padding: 16px 20px 20px;
 }
@@ -177,11 +197,15 @@ button:hover {
   grid-area: book;
 }
 
+.ticket-panel {
+  grid-area: ticket;
+}
+
 .events-panel {
   grid-area: events;
 }
 
-.panel:not(.book-panel):not(.events-panel) {
+.panel:not(.ticket-panel):not(.book-panel):not(.events-panel) {
   grid-area: tape;
 }
 
@@ -244,6 +268,88 @@ button:hover {
   overflow: hidden;
   font-size: 20px;
   line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ticket {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.segmented button {
+  width: 100%;
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: var(--surface-soft);
+}
+
+.segmented button.active.buy-mode {
+  border-color: rgba(8, 127, 91, 0.35);
+  color: #fff;
+  background: var(--buy);
+}
+
+.segmented button.active.sell-mode {
+  border-color: rgba(194, 65, 45, 0.35);
+  color: #fff;
+  background: var(--sell);
+}
+
+.field-row {
+  display: grid;
+  gap: 6px;
+}
+
+.field-row input,
+.field-row select {
+  width: 100%;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.submit-order {
+  width: 100%;
+  margin-top: 2px;
+  color: #fff;
+}
+
+.submit-order.sell-action {
+  border-color: var(--sell);
+  background: var(--sell);
+}
+
+.submit-order.buy-action {
+  border-color: var(--buy);
+  background: var(--buy);
+}
+
+.submit-order .button-label {
+  color: #fff;
+}
+
+.submit-order:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.ticket-status {
+  min-height: 18px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -356,6 +462,7 @@ td:first-child {
   .grid {
     grid-template-columns: 1fr;
     grid-template-areas:
+      "ticket"
       "book"
       "tape"
       "events";
@@ -371,9 +478,14 @@ td:first-child {
   .toolbar,
   .symbol-control,
   input,
+  select,
   button,
   .connection {
     width: 100%;
+  }
+
+  .field-grid {
+    grid-template-columns: 1fr;
   }
 
   .metrics,

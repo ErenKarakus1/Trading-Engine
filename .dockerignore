@@ -1,0 +1,9 @@
+.git/
+.agents/
+.codex/
+web/node_modules/
+web/dist/
+**/*.test
+coverage.out
+bin/
+dist/

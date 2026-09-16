@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -60,6 +61,10 @@ func (l *Limiter) Allow(ctx context.Context, subject string) error {
 		return ErrLimited
 	}
 	return nil
+}
+
+func (l *Limiter) AllowGin(c *gin.Context, subject string) error {
+	return l.Allow(c.Request.Context(), subject)
 }
 
 func (l *Limiter) key(subject string) string {

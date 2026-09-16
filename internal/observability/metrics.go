@@ -14,8 +14,12 @@ type Metrics struct {
 	ordersAccepted       *prometheus.CounterVec
 	ordersRejected       *prometheus.CounterVec
 	tradesExecuted       *prometheus.CounterVec
+	matchingLatency      *prometheus.HistogramVec
 	websocketConnections *prometheus.GaugeVec
 	websocketMessages    *prometheus.CounterVec
+	marketDataMessages   *prometheus.CounterVec
+	marketDataReconnects *prometheus.CounterVec
+	kafkaConsumerLag     *prometheus.GaugeVec
 }
 
 func NewMetrics() *Metrics {
@@ -42,6 +46,11 @@ func NewMetrics() *Metrics {
 			Name: "trading_engine_trades_executed_total",
 			Help: "Executed trades by symbol.",
 		}, []string{"symbol"}),
+		matchingLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "trading_engine_matching_latency_seconds",
+			Help:    "Time spent in matching engine operations.",
+			Buckets: prometheus.DefBuckets,
+		}, []string{"operation", "symbol"}),
 		websocketConnections: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "trading_engine_websocket_connections",
 			Help: "Active WebSocket connections by symbol.",
@@ -50,6 +59,18 @@ func NewMetrics() *Metrics {
 			Name: "trading_engine_websocket_messages_total",
 			Help: "WebSocket messages sent by symbol and type.",
 		}, []string{"symbol", "type"}),
+		marketDataMessages: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "trading_engine_market_data_messages_total",
+			Help: "External market-data messages processed by symbol and type.",
+		}, []string{"symbol", "type"}),
+		marketDataReconnects: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "trading_engine_market_data_reconnects_total",
+			Help: "External market-data reconnects by symbol.",
+		}, []string{"symbol"}),
+		kafkaConsumerLag: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "trading_engine_kafka_consumer_lag",
+			Help: "Kafka consumer lag by group and topic.",
+		}, []string{"group", "topic"}),
 	}
 
 	m.registry.MustRegister(
@@ -58,8 +79,12 @@ func NewMetrics() *Metrics {
 		m.ordersAccepted,
 		m.ordersRejected,
 		m.tradesExecuted,
+		m.matchingLatency,
 		m.websocketConnections,
 		m.websocketMessages,
+		m.marketDataMessages,
+		m.marketDataReconnects,
+		m.kafkaConsumerLag,
 	)
 	return m
 }
@@ -86,6 +111,10 @@ func (m *Metrics) TradesExecuted(symbol string, count int) {
 	m.tradesExecuted.WithLabelValues(symbol).Add(float64(count))
 }
 
+func (m *Metrics) ObserveMatching(operation, symbol string, duration time.Duration) {
+	m.matchingLatency.WithLabelValues(operation, symbol).Observe(duration.Seconds())
+}
+
 func (m *Metrics) WebSocketConnected(symbol string) {
 	m.websocketConnections.WithLabelValues(symbol).Inc()
 }
@@ -96,4 +125,16 @@ func (m *Metrics) WebSocketDisconnected(symbol string) {
 
 func (m *Metrics) WebSocketMessage(symbol, messageType string) {
 	m.websocketMessages.WithLabelValues(symbol, messageType).Inc()
+}
+
+func (m *Metrics) MarketDataMessage(symbol, messageType string) {
+	m.marketDataMessages.WithLabelValues(symbol, messageType).Inc()
+}
+
+func (m *Metrics) MarketDataReconnect(symbol string) {
+	m.marketDataReconnects.WithLabelValues(symbol).Inc()
+}
+
+func (m *Metrics) SetKafkaConsumerLag(group, topic string, lag float64) {
+	m.kafkaConsumerLag.WithLabelValues(group, topic).Set(lag)
 }

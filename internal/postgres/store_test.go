@@ -39,7 +39,7 @@ func TestEventRowFromTrade(t *testing.T) {
 }
 
 func TestSchemaContainsCoreTables(t *testing.T) {
-	for _, table := range []string{"engine_events", "orders", "trades", "accounts", "positions"} {
+	for _, table := range []string{"engine_events", "orders", "trades", "engine_snapshots", "accounts", "positions"} {
 		if !strings.Contains(Schema, "CREATE TABLE IF NOT EXISTS "+table) {
 			t.Fatalf("Schema does not create %s", table)
 		}

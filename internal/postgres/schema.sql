@@ -50,6 +50,14 @@ CREATE TABLE IF NOT EXISTS trades (
 CREATE INDEX IF NOT EXISTS trades_symbol_sequence_idx
     ON trades (symbol, sequence);
 
+CREATE TABLE IF NOT EXISTS engine_snapshots (
+    symbol TEXT NOT NULL,
+    sequence BIGINT NOT NULL,
+    orders JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (symbol, sequence)
+);
+
 CREATE TABLE IF NOT EXISTS accounts (
     id TEXT PRIMARY KEY,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()

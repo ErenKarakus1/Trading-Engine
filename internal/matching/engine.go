@@ -48,6 +48,12 @@ type CancelResult struct {
 	Event    Event
 }
 
+type Snapshot struct {
+	Symbol   domain.Symbol
+	Sequence domain.Sequence
+	Orders   []orderbook.Order
+}
+
 type Event struct {
 	Type     domain.EventType
 	Sequence domain.Sequence
@@ -179,6 +185,36 @@ func (e *Engine) BestAsk(symbol domain.Symbol) (orderbook.PriceLevel, bool) {
 	defer symbolBook.mu.Unlock()
 
 	return symbolBook.book.BestAsk()
+}
+
+func (e *Engine) Snapshot(symbol domain.Symbol) Snapshot {
+	symbolBook := e.symbolBook(symbol)
+	symbolBook.mu.Lock()
+	defer symbolBook.mu.Unlock()
+
+	return Snapshot{
+		Symbol:   symbol,
+		Sequence: e.currentSequence(),
+		Orders:   symbolBook.book.Orders(),
+	}
+}
+
+func (e *Engine) Restore(snapshot Snapshot) error {
+	symbolBook := e.symbolBook(snapshot.Symbol)
+	symbolBook.mu.Lock()
+	defer symbolBook.mu.Unlock()
+
+	book := orderbook.New()
+	for _, order := range snapshot.Orders {
+		if err := book.Add(order); err != nil {
+			return err
+		}
+	}
+	symbolBook.book = book
+	if snapshot.Sequence > e.currentSequence() {
+		e.setSequence(snapshot.Sequence)
+	}
+	return nil
 }
 
 func (e *Engine) Replay(events []Event) error {

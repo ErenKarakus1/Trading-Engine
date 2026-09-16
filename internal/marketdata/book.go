@@ -28,10 +28,11 @@ type Snapshot struct {
 }
 
 type Update struct {
-	Symbol   domain.Symbol
-	Sequence domain.Sequence
-	Bids     []Level
-	Asks     []Level
+	Symbol        domain.Symbol
+	FirstSequence domain.Sequence
+	Sequence      domain.Sequence
+	Bids          []Level
+	Asks          []Level
 }
 
 type Book struct {
@@ -89,7 +90,7 @@ func (b *Book) ApplyUpdate(update Update) error {
 	if !b.synced {
 		return ErrNotSynced
 	}
-	if update.Sequence != b.sequence+1 {
+	if !canApplyUpdate(b.sequence, update) {
 		b.synced = false
 		return ErrGapDetected
 	}
@@ -98,6 +99,13 @@ func (b *Book) ApplyUpdate(update Update) error {
 	applyLevels(b.asks, update.Asks)
 	b.sequence = update.Sequence
 	return nil
+}
+
+func canApplyUpdate(current domain.Sequence, update Update) bool {
+	if update.FirstSequence == 0 {
+		return update.Sequence == current+1
+	}
+	return update.FirstSequence <= current+1 && update.Sequence > current
 }
 
 func (b *Book) Snapshot() Snapshot {

@@ -80,3 +80,11 @@ SET status = 'canceled',
     updated_sequence = $1,
     updated_at = now()
 WHERE id = $2`
+
+const insertSnapshotSQL = `
+INSERT INTO engine_snapshots (
+    symbol,
+    sequence,
+    orders
+) VALUES ($1, $2, $3)
+ON CONFLICT (symbol, sequence) DO NOTHING`

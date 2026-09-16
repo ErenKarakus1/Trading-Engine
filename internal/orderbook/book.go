@@ -87,6 +87,13 @@ func (b *Book) BestOrder(side domain.Side) (Order, bool) {
 	return b.side(side).bestOrder()
 }
 
+func (b *Book) Orders() []Order {
+	orders := make([]Order, 0, len(b.orderRef))
+	orders = append(orders, b.buys.orders()...)
+	orders = append(orders, b.sells.orders()...)
+	return orders
+}
+
 func (b *Book) Reduce(orderID domain.OrderID, quantity domain.Quantity) (Order, error) {
 	if quantity <= 0 {
 		return Order{}, ErrInvalidOrder
@@ -209,6 +216,14 @@ func (s *bookSide) bestOrder() (Order, bool) {
 	}
 
 	return level.orders[0], true
+}
+
+func (s *bookSide) orders() []Order {
+	orders := make([]Order, 0)
+	for _, price := range s.prices {
+		orders = append(orders, s.levels[price].orders...)
+	}
+	return orders
 }
 
 func (s *bookSide) reduce(price domain.Money, index int, quantity domain.Quantity) (Order, bool) {

@@ -241,6 +241,32 @@ func TestReplayRejectsSequenceGap(t *testing.T) {
 	}
 }
 
+func TestSnapshotAndRestore(t *testing.T) {
+	source := NewEngine()
+	mustSubmit(t, source, limit("buy-1", domain.SideBuy, 100, 5))
+	mustSubmit(t, source, limit("sell-1", domain.SideSell, 105, 3))
+
+	snapshot := source.Snapshot("BTC-USD")
+	restored := NewEngine()
+	if err := restored.Restore(snapshot); err != nil {
+		t.Fatalf("Restore() error = %v", err)
+	}
+
+	sourceBid, sourceBidOK := source.BestBid("BTC-USD")
+	restoredBid, restoredBidOK := restored.BestBid("BTC-USD")
+	if sourceBidOK != restoredBidOK || sourceBid != restoredBid {
+		t.Fatalf("BestBid mismatch source=%+v/%v restored=%+v/%v", sourceBid, sourceBidOK, restoredBid, restoredBidOK)
+	}
+
+	next, err := restored.Submit(limit("buy-2", domain.SideBuy, 99, 1))
+	if err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+	if next.Sequence != 3 {
+		t.Fatalf("Sequence = %d, want 3", next.Sequence)
+	}
+}
+
 func TestConcurrentSubmissionsAreSafe(t *testing.T) {
 	engine := NewEngine()
 	const orders = 100

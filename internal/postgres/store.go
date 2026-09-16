@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"errors"
 
 	"github.com/ErenKarakus1/Trading-Engine/internal/domain"
@@ -46,6 +47,15 @@ func (s *Store) SaveEvents(ctx context.Context, events []matching.Event) error {
 	}
 
 	return tx.Commit(ctx)
+}
+
+func (s *Store) SaveSnapshot(ctx context.Context, snapshot matching.Snapshot) error {
+	orders, err := json.Marshal(snapshot.Orders)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, insertSnapshotSQL, snapshot.Symbol, snapshot.Sequence, orders)
+	return err
 }
 
 func saveEvent(ctx context.Context, tx pgx.Tx, event matching.Event, index int) error {

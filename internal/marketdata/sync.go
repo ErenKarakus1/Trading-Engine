@@ -26,15 +26,25 @@ type Feed interface {
 	Reconnect(context.Context) error
 }
 
+type Observer interface {
+	MarketDataMessage(symbol, messageType string)
+	MarketDataReconnect(symbol string)
+}
+
 type Syncer struct {
 	book       *Book
 	feed       Feed
+	observer   Observer
 	reconnects int
 	heartbeats int
 }
 
 func NewSyncer(book *Book, feed Feed) *Syncer {
 	return &Syncer{book: book, feed: feed}
+}
+
+func NewSyncerWithObserver(book *Book, feed Feed, observer Observer) *Syncer {
+	return &Syncer{book: book, feed: feed, observer: observer}
 }
 
 func (s *Syncer) Run(ctx context.Context) error {
@@ -63,6 +73,7 @@ func (s *Syncer) Heartbeats() int {
 }
 
 func (s *Syncer) apply(ctx context.Context, message Message) error {
+	s.observeMessage(message)
 	switch message.Type {
 	case MessageTypeSnapshot:
 		if message.Snapshot == nil {
@@ -76,6 +87,9 @@ func (s *Syncer) apply(ctx context.Context, message Message) error {
 		err := s.book.ApplyUpdate(*message.Update)
 		if errors.Is(err, ErrGapDetected) {
 			s.reconnects++
+			if s.observer != nil && message.Update != nil {
+				s.observer.MarketDataReconnect(string(message.Update.Symbol))
+			}
 			if reconnectErr := s.feed.Reconnect(ctx); reconnectErr != nil {
 				return reconnectErr
 			}
@@ -86,5 +100,21 @@ func (s *Syncer) apply(ctx context.Context, message Message) error {
 		return nil
 	default:
 		return ErrUnknownMessage
+	}
+}
+
+func (s *Syncer) observeMessage(message Message) {
+	if s.observer == nil {
+		return
+	}
+	switch message.Type {
+	case MessageTypeSnapshot:
+		if message.Snapshot != nil {
+			s.observer.MarketDataMessage(string(message.Snapshot.Symbol), string(message.Type))
+		}
+	case MessageTypeUpdate:
+		if message.Update != nil {
+			s.observer.MarketDataMessage(string(message.Update.Symbol), string(message.Type))
+		}
 	}
 }

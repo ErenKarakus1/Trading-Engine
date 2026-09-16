@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -25,12 +27,22 @@ type RiskChecker interface {
 	Check(account risk.Account, order matching.Order) error
 }
 
+type EventStore interface {
+	SaveEvents(context.Context, []matching.Event) error
+}
+
+type EventPublisher interface {
+	PublishEvents(context.Context, []matching.Event) error
+}
+
 type Server struct {
 	matcher     *matching.Engine
 	riskChecker RiskChecker
 	limiter     RateLimiter
 	upgrader    websocket.Upgrader
 	metrics     *observability.Metrics
+	eventStore  EventStore
+	publisher   EventPublisher
 
 	mu       sync.Mutex
 	accounts map[risk.AccountID]risk.Account
@@ -65,6 +77,14 @@ func NewServer(matcher *matching.Engine, riskChecker RiskChecker, limiter RateLi
 		server.accounts[account.ID] = account
 	}
 	return server
+}
+
+func (s *Server) UseEventStore(store EventStore) {
+	s.eventStore = store
+}
+
+func (s *Server) UseEventPublisher(publisher EventPublisher) {
+	s.publisher = publisher
 }
 
 func (s *Server) Router() *gin.Engine {
@@ -126,7 +146,9 @@ func (s *Server) handlePostOrder(c *gin.Context) {
 		}
 	}
 
+	matchStart := time.Now()
 	result, err := s.matcher.Submit(order)
+	s.metrics.ObserveMatching("submit", string(order.Symbol), time.Since(matchStart))
 	if err != nil {
 		s.metrics.OrderRejected(err.Error())
 		writeError(c, http.StatusBadRequest, err.Error())
@@ -135,6 +157,7 @@ func (s *Server) handlePostOrder(c *gin.Context) {
 	s.recordSubmit(result)
 	s.metrics.OrderAccepted(string(result.Accepted.Symbol), string(result.Accepted.Side))
 	s.metrics.TradesExecuted(string(result.Accepted.Symbol), len(result.Trades))
+	s.persistAndPublish(result.Events)
 	s.broadcast(result.Accepted.Symbol, websocketMessage{
 		Type:   "events",
 		Events: result.Events,
@@ -156,12 +179,15 @@ func (s *Server) handleDeleteOrder(c *gin.Context) {
 		return
 	}
 
+	matchStart := time.Now()
 	result, err := s.matcher.Cancel(record.Order.Symbol, orderID)
+	s.metrics.ObserveMatching("cancel", string(record.Order.Symbol), time.Since(matchStart))
 	if err != nil {
 		writeError(c, http.StatusNotFound, err.Error())
 		return
 	}
 	s.recordCancel(result)
+	s.persistAndPublish([]matching.Event{result.Event})
 	s.broadcast(record.Order.Symbol, websocketMessage{
 		Type:   "events",
 		Events: []matching.Event{result.Event},
@@ -379,6 +405,29 @@ func (s *Server) broadcast(symbol domain.Symbol, message websocketMessage) {
 		}
 		s.metrics.WebSocketMessage(string(symbol), message.Type)
 	}
+}
+
+func (s *Server) persistAndPublish(events []matching.Event) {
+	if len(events) == 0 || (s.eventStore == nil && s.publisher == nil) {
+		return
+	}
+
+	eventsCopy := append([]matching.Event(nil), events...)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if s.eventStore != nil {
+			if err := s.eventStore.SaveEvents(ctx, eventsCopy); err != nil {
+				log.Printf("save events: %v", err)
+			}
+		}
+		if s.publisher != nil {
+			if err := s.publisher.PublishEvents(ctx, eventsCopy); err != nil {
+				log.Printf("publish events: %v", err)
+			}
+		}
+	}()
 }
 
 func (s *Server) metricsMiddleware() gin.HandlerFunc {

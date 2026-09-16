@@ -40,8 +40,9 @@ func TestSyncerTracksHeartbeats(t *testing.T) {
 
 func TestSyncerReconnectsOnGap(t *testing.T) {
 	feed := &fakeFeed{}
+	observer := &fakeObserver{}
 	book := syncedBook(t)
-	syncer := NewSyncer(book, feed)
+	syncer := NewSyncerWithObserver(book, feed, observer)
 
 	err := syncer.Apply(context.Background(), Message{
 		Type:   MessageTypeUpdate,
@@ -52,6 +53,9 @@ func TestSyncerReconnectsOnGap(t *testing.T) {
 	}
 	if syncer.Reconnects() != 1 || feed.reconnects != 1 {
 		t.Fatalf("reconnects syncer=%d feed=%d, want 1", syncer.Reconnects(), feed.reconnects)
+	}
+	if observer.messages != 1 || observer.reconnects != 1 {
+		t.Fatalf("observer messages=%d reconnects=%d, want 1/1", observer.messages, observer.reconnects)
 	}
 }
 
@@ -75,4 +79,17 @@ func (f *fakeFeed) Next(context.Context) (Message, error) {
 func (f *fakeFeed) Reconnect(context.Context) error {
 	f.reconnects++
 	return nil
+}
+
+type fakeObserver struct {
+	messages   int
+	reconnects int
+}
+
+func (o *fakeObserver) MarketDataMessage(string, string) {
+	o.messages++
+}
+
+func (o *fakeObserver) MarketDataReconnect(string) {
+	o.reconnects++
 }

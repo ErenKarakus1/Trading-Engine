@@ -5,6 +5,10 @@ services:
       dockerfile: Dockerfile
     environment:
       TRADING_ENGINE_ADDR: ":8080"
+      POSTGRES_DSN: "postgres://trading_engine:trading_engine@postgres:5432/trading_engine?sslmode=disable"
+      REDIS_ADDR: "redis:6379"
+      KAFKA_BROKERS: "kafka:9092"
+      KAFKA_TOPIC: "trading-engine-events"
     ports:
       - "8080:8080"
     depends_on:
@@ -33,7 +37,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U trading_engine -d trading_engine"]
       interval: 5s

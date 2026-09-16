@@ -32,6 +32,7 @@ type Result struct {
 	Sequence  domain.Sequence
 	Accepted  Order
 	Trades    []Trade
+	Events    []Event
 	Remaining domain.Quantity
 	Rested    bool
 }
@@ -39,6 +40,23 @@ type Result struct {
 type CancelResult struct {
 	Sequence domain.Sequence
 	Order    orderbook.Order
+	Event    Event
+}
+
+type Event struct {
+	Type     domain.EventType
+	Sequence domain.Sequence
+	Order    *Order
+	Trade    *Trade
+	Cancel   *CanceledOrder
+}
+
+type CanceledOrder struct {
+	ID       domain.OrderID
+	Symbol   domain.Symbol
+	Side     domain.Side
+	Price    domain.Money
+	Quantity domain.Quantity
 }
 
 type Engine struct {
@@ -108,6 +126,7 @@ func (e *Engine) Submit(order Order) (Result, error) {
 	for i := range result.Trades {
 		result.Trades[i].Sequence = result.Sequence
 	}
+	result.Events = submitEvents(result)
 
 	return result, nil
 }
@@ -122,10 +141,23 @@ func (e *Engine) Cancel(symbol domain.Symbol, orderID domain.OrderID) (CancelRes
 		return CancelResult{}, err
 	}
 
-	return CancelResult{
+	result := CancelResult{
 		Sequence: e.sequence(),
 		Order:    order,
-	}, nil
+	}
+	result.Event = Event{
+		Type:     domain.EventTypeOrderCanceled,
+		Sequence: result.Sequence,
+		Cancel: &CanceledOrder{
+			ID:       order.ID,
+			Symbol:   symbol,
+			Side:     order.Side,
+			Price:    order.Price,
+			Quantity: order.Quantity,
+		},
+	}
+
+	return result, nil
 }
 
 func (e *Engine) BestBid(symbol domain.Symbol) (orderbook.PriceLevel, bool) {
@@ -205,4 +237,34 @@ func minQuantity(a, b domain.Quantity) domain.Quantity {
 		return a
 	}
 	return b
+}
+
+func submitEvents(result Result) []Event {
+	events := []Event{
+		{
+			Type:     domain.EventTypeOrderAccepted,
+			Sequence: result.Sequence,
+			Order:    &result.Accepted,
+		},
+	}
+
+	for i := range result.Trades {
+		events = append(events, Event{
+			Type:     domain.EventTypeTradeExecuted,
+			Sequence: result.Sequence,
+			Trade:    &result.Trades[i],
+		})
+	}
+
+	if result.Rested {
+		rested := result.Accepted
+		rested.Quantity = result.Remaining
+		events = append(events, Event{
+			Type:     domain.EventTypeOrderRested,
+			Sequence: result.Sequence,
+			Order:    &rested,
+		})
+	}
+
+	return events
 }

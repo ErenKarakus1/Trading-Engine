@@ -22,6 +22,10 @@ func TestLimitOrderRestsWhenItDoesNotCross(t *testing.T) {
 	if result.Sequence != 1 {
 		t.Fatalf("Sequence = %d, want 1", result.Sequence)
 	}
+	assertEvents(t, result.Events,
+		Event{Type: domain.EventTypeOrderAccepted, Sequence: 1},
+		Event{Type: domain.EventTypeOrderRested, Sequence: 1},
+	)
 	if !result.Rested {
 		t.Fatal("Rested = false, want true")
 	}
@@ -58,6 +62,10 @@ func TestLimitOrderMatchesAtRestingOrderPrice(t *testing.T) {
 		Price:        100,
 		Quantity:     4,
 	})
+	assertEvents(t, result.Events,
+		Event{Type: domain.EventTypeOrderAccepted, Sequence: 2},
+		Event{Type: domain.EventTypeTradeExecuted, Sequence: 2},
+	)
 
 	bestAsk, ok := engine.BestAsk("BTC-USD")
 	if !ok {
@@ -145,6 +153,15 @@ func TestCancelRestingOrder(t *testing.T) {
 	}
 	if result.Order.ID != "buy-1" {
 		t.Fatalf("Cancel() ID = %q, want buy-1", result.Order.ID)
+	}
+	if result.Event.Type != domain.EventTypeOrderCanceled {
+		t.Fatalf("Event.Type = %q, want %q", result.Event.Type, domain.EventTypeOrderCanceled)
+	}
+	if result.Event.Sequence != 2 {
+		t.Fatalf("Event.Sequence = %d, want 2", result.Event.Sequence)
+	}
+	if result.Event.Cancel == nil || result.Event.Cancel.ID != "buy-1" {
+		t.Fatalf("Event.Cancel = %+v, want canceled buy-1", result.Event.Cancel)
 	}
 	if _, ok := engine.BestBid("BTC-USD"); ok {
 		t.Fatal("BestBid() ok = true, want false")
@@ -253,6 +270,21 @@ func assertTrades(t *testing.T, got []Trade, want ...Trade) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("Trades[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func assertEvents(t *testing.T, got []Event, want ...Event) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("len(Events) = %d, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].Type != want[i].Type {
+			t.Fatalf("Events[%d].Type = %q, want %q", i, got[i].Type, want[i].Type)
+		}
+		if got[i].Sequence != want[i].Sequence {
+			t.Fatalf("Events[%d].Sequence = %d, want %d", i, got[i].Sequence, want[i].Sequence)
 		}
 	}
 }

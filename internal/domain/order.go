@@ -2,6 +2,8 @@ package domain
 
 type OrderID string
 
+type Symbol string
+
 type Quantity int64
 
 type Side string

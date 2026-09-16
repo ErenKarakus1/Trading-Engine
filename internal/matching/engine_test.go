@@ -21,7 +21,7 @@ func TestLimitOrderRestsWhenItDoesNotCross(t *testing.T) {
 		t.Fatal("Rested = false, want true")
 	}
 
-	bestBid, ok := engine.Book().BestBid()
+	bestBid, ok := engine.Book("BTC-USD").BestBid()
 	if !ok {
 		t.Fatal("BestBid() ok = false, want true")
 	}
@@ -43,13 +43,14 @@ func TestLimitOrderMatchesAtRestingOrderPrice(t *testing.T) {
 		t.Fatal("Rested = true, want false")
 	}
 	assertTrades(t, result.Trades, Trade{
+		Symbol:       "BTC-USD",
 		MakerOrderID: "sell-1",
 		TakerOrderID: "buy-1",
 		Price:        100,
 		Quantity:     4,
 	})
 
-	bestAsk, ok := engine.Book().BestAsk()
+	bestAsk, ok := engine.Book("BTC-USD").BestAsk()
 	if !ok {
 		t.Fatal("BestAsk() ok = false, want true")
 	}
@@ -70,9 +71,9 @@ func TestPriceTimePriority(t *testing.T) {
 	}
 
 	assertTrades(t, result.Trades,
-		Trade{MakerOrderID: "sell-2", TakerOrderID: "buy-1", Price: 99, Quantity: 5},
-		Trade{MakerOrderID: "sell-3", TakerOrderID: "buy-1", Price: 99, Quantity: 5},
-		Trade{MakerOrderID: "sell-1", TakerOrderID: "buy-1", Price: 100, Quantity: 2},
+		Trade{Symbol: "BTC-USD", MakerOrderID: "sell-2", TakerOrderID: "buy-1", Price: 99, Quantity: 5},
+		Trade{Symbol: "BTC-USD", MakerOrderID: "sell-3", TakerOrderID: "buy-1", Price: 99, Quantity: 5},
+		Trade{Symbol: "BTC-USD", MakerOrderID: "sell-1", TakerOrderID: "buy-1", Price: 100, Quantity: 2},
 	)
 }
 
@@ -91,8 +92,31 @@ func TestMarketOrderDoesNotRest(t *testing.T) {
 	if result.Remaining != 5 {
 		t.Fatalf("Remaining = %d, want 5", result.Remaining)
 	}
-	if _, ok := engine.Book().BestBid(); ok {
+	if _, ok := engine.Book("BTC-USD").BestBid(); ok {
 		t.Fatal("BestBid() ok = true, want false")
+	}
+}
+
+func TestSymbolsAreIsolated(t *testing.T) {
+	engine := NewEngine()
+	mustSubmit(t, engine, limitForSymbol("btc-sell-1", "BTC-USD", domain.SideSell, 100, 5))
+	mustSubmit(t, engine, limitForSymbol("eth-buy-1", "ETH-USD", domain.SideBuy, 150, 5))
+
+	result, err := engine.Submit(limitForSymbol("eth-sell-1", "ETH-USD", domain.SideSell, 150, 3))
+	if err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+
+	assertTrades(t, result.Trades,
+		Trade{Symbol: "ETH-USD", MakerOrderID: "eth-buy-1", TakerOrderID: "eth-sell-1", Price: 150, Quantity: 3},
+	)
+
+	btcAsk, ok := engine.Book("BTC-USD").BestAsk()
+	if !ok {
+		t.Fatal("BTC BestAsk() ok = false, want true")
+	}
+	if btcAsk.Quantity != 5 {
+		t.Fatalf("BTC BestAsk().Quantity = %d, want 5", btcAsk.Quantity)
 	}
 }
 
@@ -100,21 +124,26 @@ func TestCancelRestingOrder(t *testing.T) {
 	engine := NewEngine()
 	mustSubmit(t, engine, limit("buy-1", domain.SideBuy, 100, 10))
 
-	order, err := engine.Book().Cancel("buy-1")
+	order, err := engine.Book("BTC-USD").Cancel("buy-1")
 	if err != nil {
 		t.Fatalf("Cancel() error = %v", err)
 	}
 	if order.ID != "buy-1" {
 		t.Fatalf("Cancel() ID = %q, want buy-1", order.ID)
 	}
-	if _, ok := engine.Book().BestBid(); ok {
+	if _, ok := engine.Book("BTC-USD").BestBid(); ok {
 		t.Fatal("BestBid() ok = true, want false")
 	}
 }
 
 func limit(id domain.OrderID, side domain.Side, price domain.Money, quantity domain.Quantity) Order {
+	return limitForSymbol(id, "BTC-USD", side, price, quantity)
+}
+
+func limitForSymbol(id domain.OrderID, symbol domain.Symbol, side domain.Side, price domain.Money, quantity domain.Quantity) Order {
 	return Order{
 		ID:       id,
+		Symbol:   symbol,
 		Side:     side,
 		Type:     domain.OrderTypeLimit,
 		Price:    price,
@@ -125,6 +154,7 @@ func limit(id domain.OrderID, side domain.Side, price domain.Money, quantity dom
 func market(id domain.OrderID, side domain.Side, quantity domain.Quantity) Order {
 	return Order{
 		ID:       id,
+		Symbol:   "BTC-USD",
 		Side:     side,
 		Type:     domain.OrderTypeMarket,
 		Quantity: quantity,

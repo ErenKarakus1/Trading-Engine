@@ -11,6 +11,7 @@ var ErrInvalidOrder = errors.New("invalid order")
 
 type Order struct {
 	ID       domain.OrderID
+	Symbol   domain.Symbol
 	Side     domain.Side
 	Type     domain.OrderType
 	Price    domain.Money
@@ -18,6 +19,7 @@ type Order struct {
 }
 
 type Trade struct {
+	Symbol       domain.Symbol
 	MakerOrderID domain.OrderID
 	TakerOrderID domain.OrderID
 	Price        domain.Money
@@ -32,11 +34,11 @@ type Result struct {
 }
 
 type Engine struct {
-	book *orderbook.Book
+	books map[domain.Symbol]*orderbook.Book
 }
 
 func NewEngine() *Engine {
-	return &Engine{book: orderbook.New()}
+	return &Engine{books: make(map[domain.Symbol]*orderbook.Book)}
 }
 
 func (e *Engine) Submit(order Order) (Result, error) {
@@ -48,19 +50,21 @@ func (e *Engine) Submit(order Order) (Result, error) {
 		Accepted:  order,
 		Remaining: order.Quantity,
 	}
+	book := e.book(order.Symbol)
 
 	for result.Remaining > 0 {
-		maker, ok := e.book.BestOrder(opposite(order.Side))
+		maker, ok := book.BestOrder(opposite(order.Side))
 		if !ok || !crosses(order, maker.Price) {
 			break
 		}
 
 		tradeQuantity := minQuantity(result.Remaining, maker.Quantity)
-		if _, err := e.book.Reduce(maker.ID, tradeQuantity); err != nil {
+		if _, err := book.Reduce(maker.ID, tradeQuantity); err != nil {
 			return Result{}, err
 		}
 
 		result.Trades = append(result.Trades, Trade{
+			Symbol:       order.Symbol,
 			MakerOrderID: maker.ID,
 			TakerOrderID: order.ID,
 			Price:        maker.Price,
@@ -70,7 +74,7 @@ func (e *Engine) Submit(order Order) (Result, error) {
 	}
 
 	if order.Type == domain.OrderTypeLimit && result.Remaining > 0 {
-		if err := e.book.Add(orderbook.Order{
+		if err := book.Add(orderbook.Order{
 			ID:       order.ID,
 			Side:     order.Side,
 			Price:    order.Price,
@@ -84,12 +88,21 @@ func (e *Engine) Submit(order Order) (Result, error) {
 	return result, nil
 }
 
-func (e *Engine) Book() *orderbook.Book {
-	return e.book
+func (e *Engine) Book(symbol domain.Symbol) *orderbook.Book {
+	return e.book(symbol)
+}
+
+func (e *Engine) book(symbol domain.Symbol) *orderbook.Book {
+	book, exists := e.books[symbol]
+	if !exists {
+		book = orderbook.New()
+		e.books[symbol] = book
+	}
+	return book
 }
 
 func validate(order Order) error {
-	if order.ID == "" || order.Quantity <= 0 {
+	if order.ID == "" || order.Symbol == "" || order.Quantity <= 0 {
 		return ErrInvalidOrder
 	}
 	if order.Side != domain.SideBuy && order.Side != domain.SideSell {

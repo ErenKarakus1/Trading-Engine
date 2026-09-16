@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ErenKarakus1/Trading-Engine/internal/domain"
+	"github.com/ErenKarakus1/Trading-Engine/internal/marketdata"
 	"github.com/ErenKarakus1/Trading-Engine/internal/matching"
 	"github.com/ErenKarakus1/Trading-Engine/internal/observability"
 	"github.com/ErenKarakus1/Trading-Engine/internal/orderbook"
@@ -45,11 +46,12 @@ type Server struct {
 	eventStore  EventStore
 	publisher   EventPublisher
 
-	mu       sync.Mutex
-	accounts map[risk.AccountID]risk.Account
-	orders   map[domain.OrderID]orderRecord
-	trades   []matching.Trade
-	clients  map[domain.Symbol]map[*websocket.Conn]struct{}
+	mu          sync.Mutex
+	accounts    map[risk.AccountID]risk.Account
+	orders      map[domain.OrderID]orderRecord
+	trades      []matching.Trade
+	clients     map[domain.Symbol]map[*websocket.Conn]struct{}
+	marketBooks map[domain.Symbol]*marketdata.Book
 }
 
 type orderRecord struct {
@@ -71,10 +73,11 @@ func NewServer(matcher *matching.Engine, riskChecker RiskChecker, limiter RateLi
 		upgrader: websocket.Upgrader{
 			CheckOrigin: sameMachineOrigin,
 		},
-		metrics:  observability.NewMetrics(),
-		accounts: make(map[risk.AccountID]risk.Account),
-		orders:   make(map[domain.OrderID]orderRecord),
-		clients:  make(map[domain.Symbol]map[*websocket.Conn]struct{}),
+		metrics:     observability.NewMetrics(),
+		accounts:    make(map[risk.AccountID]risk.Account),
+		orders:      make(map[domain.OrderID]orderRecord),
+		clients:     make(map[domain.Symbol]map[*websocket.Conn]struct{}),
+		marketBooks: make(map[domain.Symbol]*marketdata.Book),
 	}
 	for _, account := range accounts {
 		server.accounts[account.ID] = account
@@ -112,6 +115,15 @@ func (s *Server) UseEventPublisher(publisher EventPublisher) {
 	s.publisher = publisher
 }
 
+func (s *Server) UseMarketDataBook(symbol domain.Symbol, book *marketdata.Book) {
+	if symbol == "" || book == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.marketBooks[symbol] = book
+}
+
 func (s *Server) Router() *gin.Engine {
 	router := gin.New()
 	router.Use(s.metricsMiddleware())
@@ -121,7 +133,9 @@ func (s *Server) Router() *gin.Engine {
 	router.GET("/orders/:id", s.handleGetOrder)
 	router.GET("/orderbook/:symbol", s.handleGetOrderBook)
 	router.GET("/trades/:symbol", s.handleGetTrades)
+	router.GET("/marketdata/:symbol", s.handleGetMarketData)
 	router.GET("/ws/orderbook/:symbol", s.handleOrderBookSocket)
+	router.GET("/ws/marketdata/:symbol", s.handleMarketDataSocket)
 	return router
 }
 
@@ -267,6 +281,15 @@ func (s *Server) handleGetTrades(c *gin.Context) {
 	c.JSON(http.StatusOK, trades)
 }
 
+func (s *Server) handleGetMarketData(c *gin.Context) {
+	snapshot, ok := s.marketDataSnapshot(domain.Symbol(c.Param("symbol")))
+	if !ok {
+		writeError(c, http.StatusNotFound, "market_data_not_found")
+		return
+	}
+	c.JSON(http.StatusOK, snapshot)
+}
+
 func (s *Server) handleOrderBookSocket(c *gin.Context) {
 	symbol := domain.Symbol(c.Param("symbol"))
 	if symbol == "" {
@@ -294,6 +317,33 @@ func (s *Server) handleOrderBookSocket(c *gin.Context) {
 	}
 }
 
+func (s *Server) handleMarketDataSocket(c *gin.Context) {
+	symbol := domain.Symbol(c.Param("symbol"))
+	if symbol == "" {
+		writeError(c, http.StatusBadRequest, "missing_symbol")
+		return
+	}
+
+	conn, err := s.upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		snapshot, ok := s.marketDataSnapshot(symbol)
+		if ok {
+			if err := conn.WriteJSON(marketDataMessage{Type: "snapshot", Symbol: symbol, Snapshot: &snapshot}); err != nil {
+				return
+			}
+		}
+		<-ticker.C
+	}
+}
+
 type orderBookResponse struct {
 	Symbol  domain.Symbol         `json:"symbol"`
 	BestBid *orderbook.PriceLevel `json:"best_bid,omitempty"`
@@ -305,6 +355,22 @@ type websocketMessage struct {
 	Symbol domain.Symbol      `json:"symbol,omitempty"`
 	Book   *orderBookResponse `json:"book,omitempty"`
 	Events []matching.Event   `json:"events,omitempty"`
+}
+
+type marketDataMessage struct {
+	Type     string               `json:"type"`
+	Symbol   domain.Symbol        `json:"symbol"`
+	Snapshot *marketdata.Snapshot `json:"snapshot,omitempty"`
+}
+
+func (s *Server) marketDataSnapshot(symbol domain.Symbol) (marketdata.Snapshot, bool) {
+	s.mu.Lock()
+	book, ok := s.marketBooks[symbol]
+	s.mu.Unlock()
+	if !ok {
+		return marketdata.Snapshot{}, false
+	}
+	return book.Snapshot(), true
 }
 
 func (s *Server) account(id risk.AccountID) (risk.Account, bool) {

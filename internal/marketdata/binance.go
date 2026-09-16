@@ -16,6 +16,7 @@ const BinanceSpotDepthBaseURL = "wss://stream.binance.com:9443/ws"
 type BinanceDepthConfig struct {
 	URL           string
 	StreamSymbol  string
+	StreamName    string
 	DomainSymbol  domain.Symbol
 	PriceScale    int64
 	QuantityScale int64
@@ -79,7 +80,7 @@ func (f *BinanceDepthFeed) Close() error {
 
 func (f *BinanceDepthFeed) streamURL() string {
 	base := strings.TrimRight(f.config.URL, "/")
-	return fmt.Sprintf("%s/%s@depth", base, strings.ToLower(f.config.StreamSymbol))
+	return fmt.Sprintf("%s/%s", base, strings.ToLower(f.config.StreamName))
 }
 
 func (f *BinanceDepthFeed) parse(payload []byte) (Message, error) {
@@ -219,6 +220,9 @@ func normalizeBinanceConfig(config BinanceDepthConfig) BinanceDepthConfig {
 	}
 	if config.StreamSymbol == "" {
 		config.StreamSymbol = "btcusdt"
+	}
+	if config.StreamName == "" {
+		config.StreamName = config.StreamSymbol + "@depth20@100ms"
 	}
 	if config.DomainSymbol == "" {
 		config.DomainSymbol = domain.Symbol(strings.ToUpper(config.StreamSymbol))

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 
 const DEFAULT_SYMBOL = "BTC-USD";
+const MARKET_SYMBOL = "BTC-USDT";
 
 function field(value, ...keys) {
   if (!value) return undefined;
@@ -30,6 +31,7 @@ function App() {
   const [symbol, setSymbol] = useState(DEFAULT_SYMBOL);
   const [status, setStatus] = useState("connecting");
   const [book, setBook] = useState({ symbol: DEFAULT_SYMBOL });
+  const [marketBook, setMarketBook] = useState({ symbol: MARKET_SYMBOL });
   const [trades, setTrades] = useState([]);
   const [events, setEvents] = useState([]);
   const [error, setError] = useState("");
@@ -43,6 +45,7 @@ function App() {
   const [orderStatus, setOrderStatus] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const socketRef = useRef(null);
+  const marketSocketRef = useRef(null);
 
   const refresh = useCallback(async (activeSymbol) => {
     const encoded = encodeURIComponent(activeSymbol);
@@ -90,6 +93,33 @@ function App() {
       socket.close();
     };
   }, [refresh, symbol]);
+
+  useEffect(() => {
+    let active = true;
+
+    fetch(`/marketdata/${encodeURIComponent(MARKET_SYMBOL)}`)
+      .then((response) => response.ok ? response.json() : null)
+      .then((snapshot) => {
+        if (active && snapshot) setMarketBook(snapshot);
+      })
+      .catch(() => {});
+
+    if (marketSocketRef.current) marketSocketRef.current.close();
+
+    const protocol = location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${protocol}://${location.host}/ws/marketdata/${encodeURIComponent(MARKET_SYMBOL)}`);
+    marketSocketRef.current = socket;
+
+    socket.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      if (message.type === "snapshot" && message.snapshot) setMarketBook(message.snapshot);
+    };
+
+    return () => {
+      active = false;
+      socket.close();
+    };
+  }, []);
 
   const loadSymbol = useCallback(() => {
     const next = symbolInput.trim().toUpperCase();
@@ -152,6 +182,10 @@ function App() {
     return { trades: trades.length, volume };
   }, [trades]);
 
+  const marketBestBid = field(marketBook.bids?.[0], "price", "Price");
+  const marketBestAsk = field(marketBook.asks?.[0], "price", "Price");
+  const marketSpread = marketBestBid !== undefined && marketBestAsk !== undefined ? Number(marketBestAsk) - Number(marketBestBid) : null;
+
   return (
     <div className="shell">
       <header className="topbar">
@@ -204,6 +238,16 @@ function App() {
           <BookTable bid={bid} ask={ask} />
         </section>
 
+        <section className="panel market-panel">
+          <PanelHeader title="Binance Market" meta={MARKET_SYMBOL} />
+          <div className="metrics">
+            <Metric label="Best Bid" value={formatNumber(marketBestBid)} tone="buy" />
+            <Metric label="Best Ask" value={formatNumber(marketBestAsk)} tone="sell" />
+            <Metric label="Spread" value={formatNumber(marketSpread)} />
+          </div>
+          <MarketTable snapshot={marketBook} />
+        </section>
+
         <section className="panel">
           <PanelHeader title="Tape" meta={`${formatNumber(totals.trades)} trades`} />
           <div className="metrics compact">
@@ -218,6 +262,38 @@ function App() {
           <EventLog events={events} />
         </section>
       </main>
+    </div>
+  );
+}
+
+function MarketTable({ snapshot }) {
+  const bids = snapshot.bids || snapshot.Bids || [];
+  const asks = snapshot.asks || snapshot.Asks || [];
+  const rows = [
+    ["Bid", bids[0], "buy"],
+    ["Ask", asks[0], "sell"],
+  ];
+
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Side</th>
+            <th>Price</th>
+            <th>Quantity</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(([label, level, tone]) => (
+            <tr key={label}>
+              <td className={tone}>{label}</td>
+              <td>{formatNumber(field(level, "price", "Price"))}</td>
+              <td>{formatNumber(field(level, "quantity", "Quantity"))}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

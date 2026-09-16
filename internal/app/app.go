@@ -11,6 +11,7 @@ import (
 	"github.com/ErenKarakus1/Trading-Engine/internal/api"
 	"github.com/ErenKarakus1/Trading-Engine/internal/domain"
 	"github.com/ErenKarakus1/Trading-Engine/internal/kafka"
+	"github.com/ErenKarakus1/Trading-Engine/internal/marketdata"
 	"github.com/ErenKarakus1/Trading-Engine/internal/matching"
 	"github.com/ErenKarakus1/Trading-Engine/internal/postgres"
 	"github.com/ErenKarakus1/Trading-Engine/internal/ratelimit"
@@ -105,8 +106,34 @@ func Run() error {
 	if err := server.SeedOrders(startupOrders()); err != nil {
 		log.Printf("startup orders disabled: %v", err)
 	}
+	startMarketData(ctx, server)
 
 	return http.ListenAndServe(addr, server.Router())
+}
+
+func startMarketData(ctx context.Context, server *api.Server) {
+	symbol := domain.Symbol(getenv("BINANCE_DOMAIN_SYMBOL", "BTC-USDT"))
+	book := marketdata.NewBook(symbol)
+	server.UseMarketDataBook(symbol, book)
+
+	feed, err := marketdata.NewBinanceDepthFeed(ctx, marketdata.BinanceDepthConfig{
+		StreamSymbol:  getenv("BINANCE_STREAM_SYMBOL", "btcusdt"),
+		StreamName:    getenv("BINANCE_STREAM_NAME", "btcusdt@depth20@100ms"),
+		DomainSymbol:  symbol,
+		PriceScale:    100,
+		QuantityScale: 100_000_000,
+	})
+	if err != nil {
+		log.Printf("binance market data disabled: %v", err)
+		return
+	}
+
+	syncer := marketdata.NewSyncer(book, feed)
+	go func() {
+		if err := syncer.Run(context.Background()); err != nil {
+			log.Printf("binance market data stopped: %v", err)
+		}
+	}()
 }
 
 func startupOrders() []matching.Order {

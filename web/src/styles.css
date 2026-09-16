@@ -177,10 +177,10 @@ button:hover {
 
 .grid {
   display: grid;
-  grid-template-columns: minmax(280px, 0.65fr) minmax(320px, 0.9fr) minmax(420px, 1.15fr);
+  grid-template-columns: minmax(260px, 0.7fr) minmax(300px, 0.9fr) minmax(300px, 0.9fr) minmax(380px, 1.1fr);
   grid-template-areas:
-    "ticket book tape"
-    "events events events";
+    "ticket book market tape"
+    "events events events events";
   gap: 16px;
   padding: 16px 20px 20px;
 }
@@ -205,7 +205,11 @@ button:hover {
   grid-area: events;
 }
 
-.panel:not(.ticket-panel):not(.book-panel):not(.events-panel) {
+.market-panel {
+  grid-area: market;
+}
+
+.panel:not(.ticket-panel):not(.book-panel):not(.market-panel):not(.events-panel) {
   grid-area: tape;
 }
 
@@ -464,6 +468,7 @@ td:first-child {
     grid-template-areas:
       "ticket"
       "book"
+      "market"
       "tape"
       "events";
     padding: 12px;

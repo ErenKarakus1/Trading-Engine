@@ -2,6 +2,7 @@ package matching
 
 import (
 	"errors"
+	"sync"
 
 	"github.com/ErenKarakus1/Trading-Engine/internal/domain"
 	"github.com/ErenKarakus1/Trading-Engine/internal/orderbook"
@@ -34,23 +35,32 @@ type Result struct {
 }
 
 type Engine struct {
-	books map[domain.Symbol]*orderbook.Book
+	mu    sync.Mutex
+	books map[domain.Symbol]*symbolBook
+}
+
+type symbolBook struct {
+	mu   sync.Mutex
+	book *orderbook.Book
 }
 
 func NewEngine() *Engine {
-	return &Engine{books: make(map[domain.Symbol]*orderbook.Book)}
+	return &Engine{books: make(map[domain.Symbol]*symbolBook)}
 }
 
 func (e *Engine) Submit(order Order) (Result, error) {
 	if err := validate(order); err != nil {
 		return Result{}, err
 	}
+	symbolBook := e.symbolBook(order.Symbol)
+	symbolBook.mu.Lock()
+	defer symbolBook.mu.Unlock()
 
 	result := Result{
 		Accepted:  order,
 		Remaining: order.Quantity,
 	}
-	book := e.book(order.Symbol)
+	book := symbolBook.book
 
 	for result.Remaining > 0 {
 		maker, ok := book.BestOrder(opposite(order.Side))
@@ -88,14 +98,37 @@ func (e *Engine) Submit(order Order) (Result, error) {
 	return result, nil
 }
 
-func (e *Engine) Book(symbol domain.Symbol) *orderbook.Book {
-	return e.book(symbol)
+func (e *Engine) Cancel(symbol domain.Symbol, orderID domain.OrderID) (orderbook.Order, error) {
+	symbolBook := e.symbolBook(symbol)
+	symbolBook.mu.Lock()
+	defer symbolBook.mu.Unlock()
+
+	return symbolBook.book.Cancel(orderID)
 }
 
-func (e *Engine) book(symbol domain.Symbol) *orderbook.Book {
+func (e *Engine) BestBid(symbol domain.Symbol) (orderbook.PriceLevel, bool) {
+	symbolBook := e.symbolBook(symbol)
+	symbolBook.mu.Lock()
+	defer symbolBook.mu.Unlock()
+
+	return symbolBook.book.BestBid()
+}
+
+func (e *Engine) BestAsk(symbol domain.Symbol) (orderbook.PriceLevel, bool) {
+	symbolBook := e.symbolBook(symbol)
+	symbolBook.mu.Lock()
+	defer symbolBook.mu.Unlock()
+
+	return symbolBook.book.BestAsk()
+}
+
+func (e *Engine) symbolBook(symbol domain.Symbol) *symbolBook {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	book, exists := e.books[symbol]
 	if !exists {
-		book = orderbook.New()
+		book = &symbolBook{book: orderbook.New()}
 		e.books[symbol] = book
 	}
 	return book

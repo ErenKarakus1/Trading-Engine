@@ -1,6 +1,8 @@
 package matching
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/ErenKarakus1/Trading-Engine/internal/domain"
@@ -21,7 +23,7 @@ func TestLimitOrderRestsWhenItDoesNotCross(t *testing.T) {
 		t.Fatal("Rested = false, want true")
 	}
 
-	bestBid, ok := engine.Book("BTC-USD").BestBid()
+	bestBid, ok := engine.BestBid("BTC-USD")
 	if !ok {
 		t.Fatal("BestBid() ok = false, want true")
 	}
@@ -50,7 +52,7 @@ func TestLimitOrderMatchesAtRestingOrderPrice(t *testing.T) {
 		Quantity:     4,
 	})
 
-	bestAsk, ok := engine.Book("BTC-USD").BestAsk()
+	bestAsk, ok := engine.BestAsk("BTC-USD")
 	if !ok {
 		t.Fatal("BestAsk() ok = false, want true")
 	}
@@ -92,7 +94,7 @@ func TestMarketOrderDoesNotRest(t *testing.T) {
 	if result.Remaining != 5 {
 		t.Fatalf("Remaining = %d, want 5", result.Remaining)
 	}
-	if _, ok := engine.Book("BTC-USD").BestBid(); ok {
+	if _, ok := engine.BestBid("BTC-USD"); ok {
 		t.Fatal("BestBid() ok = true, want false")
 	}
 }
@@ -111,7 +113,7 @@ func TestSymbolsAreIsolated(t *testing.T) {
 		Trade{Symbol: "ETH-USD", MakerOrderID: "eth-buy-1", TakerOrderID: "eth-sell-1", Price: 150, Quantity: 3},
 	)
 
-	btcAsk, ok := engine.Book("BTC-USD").BestAsk()
+	btcAsk, ok := engine.BestAsk("BTC-USD")
 	if !ok {
 		t.Fatal("BTC BestAsk() ok = false, want true")
 	}
@@ -124,15 +126,61 @@ func TestCancelRestingOrder(t *testing.T) {
 	engine := NewEngine()
 	mustSubmit(t, engine, limit("buy-1", domain.SideBuy, 100, 10))
 
-	order, err := engine.Book("BTC-USD").Cancel("buy-1")
+	order, err := engine.Cancel("BTC-USD", "buy-1")
 	if err != nil {
 		t.Fatalf("Cancel() error = %v", err)
 	}
 	if order.ID != "buy-1" {
 		t.Fatalf("Cancel() ID = %q, want buy-1", order.ID)
 	}
-	if _, ok := engine.Book("BTC-USD").BestBid(); ok {
+	if _, ok := engine.BestBid("BTC-USD"); ok {
 		t.Fatal("BestBid() ok = true, want false")
+	}
+}
+
+func TestConcurrentSubmissionsAreSafe(t *testing.T) {
+	engine := NewEngine()
+	const orders = 100
+
+	var wg sync.WaitGroup
+	for i := range orders {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+
+			symbol := domain.Symbol("BTC-USD")
+			if i%2 == 0 {
+				symbol = "ETH-USD"
+			}
+
+			order := limitForSymbol(
+				domain.OrderID(fmt.Sprintf("buy-%d", i)),
+				symbol,
+				domain.SideBuy,
+				100,
+				1,
+			)
+			if _, err := engine.Submit(order); err != nil {
+				t.Errorf("Submit() error = %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	btcBid, ok := engine.BestBid("BTC-USD")
+	if !ok {
+		t.Fatal("BTC BestBid() ok = false, want true")
+	}
+	if btcBid.Quantity != 50 {
+		t.Fatalf("BTC BestBid().Quantity = %d, want 50", btcBid.Quantity)
+	}
+
+	ethBid, ok := engine.BestBid("ETH-USD")
+	if !ok {
+		t.Fatal("ETH BestBid() ok = false, want true")
+	}
+	if ethBid.Quantity != 50 {
+		t.Fatalf("ETH BestBid().Quantity = %d, want 50", ethBid.Quantity)
 	}
 }
 

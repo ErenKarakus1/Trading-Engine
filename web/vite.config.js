@@ -6,11 +6,21 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/orders": "http://127.0.0.1:8080",
-      "/orderbook": "http://127.0.0.1:8080",
-      "/trades": "http://127.0.0.1:8080",
+      "/orders": {
+        target: "http://127.0.0.1:8080",
+        changeOrigin: true,
+      },
+      "/orderbook": {
+        target: "http://127.0.0.1:8080",
+        changeOrigin: true,
+      },
+      "/trades": {
+        target: "http://127.0.0.1:8080",
+        changeOrigin: true,
+      },
       "/ws": {
-        target: "ws://127.0.0.1:8080",
+        target: "http://127.0.0.1:8080",
+        changeOrigin: true,
         ws: true,
       },
     },

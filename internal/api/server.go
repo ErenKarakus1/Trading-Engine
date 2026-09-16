@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -67,16 +68,29 @@ func NewServer(matcher *matching.Engine, riskChecker RiskChecker, limiter RateLi
 		matcher:     matcher,
 		riskChecker: riskChecker,
 		limiter:     limiter,
-		upgrader:    websocket.Upgrader{},
-		metrics:     observability.NewMetrics(),
-		accounts:    make(map[risk.AccountID]risk.Account),
-		orders:      make(map[domain.OrderID]orderRecord),
-		clients:     make(map[domain.Symbol]map[*websocket.Conn]struct{}),
+		upgrader: websocket.Upgrader{
+			CheckOrigin: sameMachineOrigin,
+		},
+		metrics:  observability.NewMetrics(),
+		accounts: make(map[risk.AccountID]risk.Account),
+		orders:   make(map[domain.OrderID]orderRecord),
+		clients:  make(map[domain.Symbol]map[*websocket.Conn]struct{}),
 	}
 	for _, account := range accounts {
 		server.accounts[account.ID] = account
 	}
 	return server
+}
+
+func sameMachineOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	return strings.HasPrefix(origin, "http://127.0.0.1:") ||
+		strings.HasPrefix(origin, "http://localhost:") ||
+		strings.HasPrefix(origin, "https://127.0.0.1:") ||
+		strings.HasPrefix(origin, "https://localhost:")
 }
 
 func (s *Server) UseEventStore(store EventStore) {

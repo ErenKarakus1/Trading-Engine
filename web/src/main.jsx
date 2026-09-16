@@ -3,35 +3,47 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 
 const DEFAULT_SYMBOL = "BTC-USD";
-const MARKET_SYMBOL = "BTC-USDT";
+const SYMBOLS = ["BTC-USD", "ETH-USD"];
 
-function field(value, ...keys) {
-  if (!value) return undefined;
+function marketSymbolFor(symbol) {
+  const [base, quote] = symbol.split("-");
+  return base && quote === "USD" ? `${base}-USDT` : symbol;
+}
+
+function valueOf(source, ...keys) {
+  if (!source) return undefined;
   for (const key of keys) {
-    if (value[key] !== undefined && value[key] !== null) return value[key];
+    if (source[key] !== undefined && source[key] !== null) return source[key];
   }
   return undefined;
 }
 
-function formatNumber(value) {
+function numberText(value) {
   if (value === undefined || value === null || value === "") return "-";
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return String(value);
-  return new Intl.NumberFormat("en-US").format(numeric);
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value);
+  return new Intl.NumberFormat("en-US").format(number);
 }
 
-function statusLabel(status) {
-  if (status === "live") return "Live";
-  if (status === "connecting") return "Connecting";
-  return "Offline";
+function scaledText(value, scale) {
+  if (value === undefined || value === null || value === "") return "-";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value);
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 8 }).format(number / scale);
+}
+
+function diff(bid, ask) {
+  if (bid === undefined || ask === undefined) return null;
+  return Number(ask) - Number(bid);
 }
 
 function App() {
-  const [symbolInput, setSymbolInput] = useState(DEFAULT_SYMBOL);
   const [symbol, setSymbol] = useState(DEFAULT_SYMBOL);
-  const [status, setStatus] = useState("connecting");
+  const [symbolInput, setSymbolInput] = useState(DEFAULT_SYMBOL);
+  const [bookSource, setBookSource] = useState("internal");
+  const [connection, setConnection] = useState("connecting");
   const [book, setBook] = useState({ symbol: DEFAULT_SYMBOL });
-  const [marketBook, setMarketBook] = useState({ symbol: MARKET_SYMBOL });
+  const [marketBook, setMarketBook] = useState({ symbol: marketSymbolFor(DEFAULT_SYMBOL) });
   const [trades, setTrades] = useState([]);
   const [events, setEvents] = useState([]);
   const [error, setError] = useState("");
@@ -42,10 +54,11 @@ function App() {
     price: "101",
     quantity: "1",
   });
-  const [orderStatus, setOrderStatus] = useState("");
+  const [ticketStatus, setTicketStatus] = useState("Ready");
   const [submitting, setSubmitting] = useState(false);
-  const socketRef = useRef(null);
-  const marketSocketRef = useRef(null);
+  const internalSocket = useRef(null);
+  const marketSocket = useRef(null);
+  const marketSymbol = useMemo(() => marketSymbolFor(symbol), [symbol]);
 
   const refresh = useCallback(async (activeSymbol) => {
     const encoded = encodeURIComponent(activeSymbol);
@@ -53,10 +66,8 @@ function App() {
       fetch(`/orderbook/${encoded}`),
       fetch(`/trades/${encoded}`),
     ]);
-
-    if (!bookResponse.ok) throw new Error(`book ${bookResponse.status}`);
+    if (!bookResponse.ok) throw new Error(`orderbook ${bookResponse.status}`);
     if (!tradesResponse.ok) throw new Error(`trades ${tradesResponse.status}`);
-
     setBook(await bookResponse.json());
     setTrades(await tradesResponse.json());
     setError("");
@@ -64,30 +75,24 @@ function App() {
 
   useEffect(() => {
     let active = true;
+    setConnection("connecting");
+    refresh(symbol).catch((err) => active && setError(err.message));
 
-    setStatus("connecting");
-    refresh(symbol).catch((err) => {
-      if (active) setError(err.message);
-    });
-
-    if (socketRef.current) socketRef.current.close();
-
+    if (internalSocket.current) internalSocket.current.close();
     const protocol = location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(`${protocol}://${location.host}/ws/orderbook/${encodeURIComponent(symbol)}`);
-    socketRef.current = socket;
-
-    socket.onopen = () => active && setStatus("live");
-    socket.onerror = () => active && setError("websocket unavailable");
-    socket.onclose = () => active && setStatus("offline");
+    internalSocket.current = socket;
+    socket.onopen = () => active && setConnection("live");
+    socket.onerror = () => active && setError("internal websocket unavailable");
+    socket.onclose = () => active && setConnection("offline");
     socket.onmessage = (event) => {
       const message = JSON.parse(event.data);
       if (message.type === "snapshot" && message.book) setBook(message.book);
       if (message.type === "events") {
-        setEvents((current) => [...message.events, ...current].slice(0, 100));
+        setEvents((current) => [...message.events, ...current].slice(0, 120));
         refresh(symbol).catch((err) => active && setError(err.message));
       }
     };
-
     return () => {
       active = false;
       socket.close();
@@ -96,38 +101,35 @@ function App() {
 
   useEffect(() => {
     let active = true;
-
-    fetch(`/marketdata/${encodeURIComponent(MARKET_SYMBOL)}`)
-      .then((response) => response.ok ? response.json() : null)
-      .then((snapshot) => {
-        if (active && snapshot) setMarketBook(snapshot);
-      })
+    setMarketBook({ symbol: marketSymbol });
+    fetch(`/marketdata/${encodeURIComponent(marketSymbol)}`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((snapshot) => active && snapshot && setMarketBook(snapshot))
       .catch(() => {});
 
-    if (marketSocketRef.current) marketSocketRef.current.close();
-
+    if (marketSocket.current) marketSocket.current.close();
     const protocol = location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${protocol}://${location.host}/ws/marketdata/${encodeURIComponent(MARKET_SYMBOL)}`);
-    marketSocketRef.current = socket;
-
+    const socket = new WebSocket(`${protocol}://${location.host}/ws/marketdata/${encodeURIComponent(marketSymbol)}`);
+    marketSocket.current = socket;
     socket.onmessage = (event) => {
       const message = JSON.parse(event.data);
       if (message.type === "snapshot" && message.snapshot) setMarketBook(message.snapshot);
     };
-
     return () => {
       active = false;
       socket.close();
     };
+  }, [marketSymbol]);
+
+  const setActiveSymbol = useCallback((next) => {
+    setSymbolInput(next);
+    setSymbol(next);
   }, []);
 
-  const loadSymbol = useCallback(() => {
+  const loadTypedSymbol = useCallback(() => {
     const next = symbolInput.trim().toUpperCase();
-    if (next) {
-      setSymbolInput(next);
-      setSymbol(next);
-    }
-  }, [symbolInput]);
+    if (next) setActiveSymbol(next);
+  }, [setActiveSymbol, symbolInput]);
 
   const updateTicket = useCallback((key, value) => {
     setTicket((current) => ({ ...current, [key]: value }));
@@ -136,8 +138,7 @@ function App() {
   const submitOrder = useCallback(async (event) => {
     event.preventDefault();
     setSubmitting(true);
-    setOrderStatus("");
-
+    setTicketStatus("Sending");
     const order = {
       account_id: ticket.accountId.trim(),
       id: `ui-${Date.now()}`,
@@ -146,9 +147,7 @@ function App() {
       type: ticket.type,
       quantity: Number(ticket.quantity),
     };
-    if (ticket.type === "limit") {
-      order.price = Number(ticket.price);
-    }
+    if (ticket.type === "limit") order.price = Number(ticket.price);
 
     try {
       const response = await fetch("/orders", {
@@ -157,323 +156,334 @@ function App() {
         body: JSON.stringify(order),
       });
       const body = await response.json();
-      if (!response.ok) {
-        throw new Error(body.error || `order ${response.status}`);
-      }
-      setOrderStatus(`accepted ${order.id}`);
+      if (!response.ok) throw new Error(body.error || `order ${response.status}`);
+      setTicketStatus(`Accepted ${order.id}`);
       await refresh(symbol);
     } catch (err) {
-      setOrderStatus(err.message);
+      setTicketStatus(err.message);
     } finally {
       setSubmitting(false);
     }
   }, [refresh, symbol, ticket]);
 
-  const bid = field(book, "best_bid", "BestBid");
-  const ask = field(book, "best_ask", "BestAsk");
-  const bestBid = field(bid, "price", "Price");
-  const bestAsk = field(ask, "price", "Price");
-  const spread = bestBid !== undefined && bestAsk !== undefined ? Number(bestAsk) - Number(bestBid) : null;
-  const lastEvent = events[0];
-  const lastSequence = field(lastEvent, "sequence", "Sequence");
-
-  const totals = useMemo(() => {
-    const volume = trades.reduce((sum, trade) => sum + Number(field(trade, "quantity", "Quantity") || 0), 0);
-    return { trades: trades.length, volume };
-  }, [trades]);
-
-  const marketBestBid = field(marketBook.bids?.[0], "price", "Price");
-  const marketBestAsk = field(marketBook.asks?.[0], "price", "Price");
-  const marketSpread = marketBestBid !== undefined && marketBestAsk !== undefined ? Number(marketBestAsk) - Number(marketBestBid) : null;
+  const internalBid = valueOf(book, "best_bid", "BestBid");
+  const internalAsk = valueOf(book, "best_ask", "BestAsk");
+  const internalBidPrice = valueOf(internalBid, "price", "Price");
+  const internalAskPrice = valueOf(internalAsk, "price", "Price");
+  const marketBids = marketBook.bids || marketBook.Bids || [];
+  const marketAsks = marketBook.asks || marketBook.Asks || [];
+  const marketBidRaw = valueOf(marketBids[0], "price", "Price");
+  const marketAskRaw = valueOf(marketAsks[0], "price", "Price");
+  const marketBidPrice = marketBidRaw === undefined ? undefined : Number(marketBidRaw) / 100;
+  const marketAskPrice = marketAskRaw === undefined ? undefined : Number(marketAskRaw) / 100;
+  const selectedBookTitle = bookSource === "internal" ? "Internal Engine Book" : "Binance Reference Book";
+  const selectedBid = bookSource === "internal" ? internalBidPrice : marketBidPrice;
+  const selectedAsk = bookSource === "internal" ? internalAskPrice : marketAskPrice;
+  const selectedSpread = diff(selectedBid, selectedAsk);
+  const selectedSourceLabel = bookSource === "internal" ? symbol : marketSymbol;
+  const volume = trades.reduce((sum, trade) => sum + Number(valueOf(trade, "quantity", "Quantity") || 0), 0);
 
   return (
-    <div className="shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">Trading Engine</p>
-          <h1>{symbol}</h1>
+    <div className="app-shell">
+      <aside className="market-rail">
+        <div className="rail-brand">
+          <span>TE</span>
+          <strong>Trading Engine</strong>
         </div>
-        <div className="toolbar">
-          <div className="symbol-control">
-            <label htmlFor="symbol">Symbol</label>
+        <div className="rail-section">
+          <p>Markets</p>
+          {SYMBOLS.map((item) => (
+            <button
+              className={item === symbol ? "market-button active" : "market-button"}
+              key={item}
+              type="button"
+              onClick={() => setActiveSymbol(item)}
+            >
+              <span>{item}</span>
+              <small>{marketSymbolFor(item)}</small>
+            </button>
+          ))}
+        </div>
+      </aside>
+
+      <main className="desk">
+        <header className="desk-header">
+          <div>
+            <span className="label">Active symbol</span>
+            <h1>{symbol}</h1>
+          </div>
+          <div className="symbol-loader">
             <input
-              id="symbol"
               value={symbolInput}
-              autoComplete="off"
               spellCheck="false"
               onChange={(event) => setSymbolInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") loadSymbol();
-              }}
+              onKeyDown={(event) => event.key === "Enter" && loadTypedSymbol()}
             />
+            <button type="button" onClick={loadTypedSymbol}>Load</button>
           </div>
-          <button type="button" onClick={loadSymbol} aria-label="Load symbol">
-            <span className="button-label">Load</span>
-          </button>
-          <span className={`connection ${status}`}>{statusLabel(status)}</span>
-        </div>
-      </header>
+          <div className={`connection ${connection}`}>{connection}</div>
+        </header>
 
-      {error ? <div className="notice">{error}</div> : null}
+        {error ? <div className="system-alert">{error}</div> : null}
 
-      <main className="grid">
-        <section className="panel ticket-panel">
-          <PanelHeader title="Order Ticket" meta={symbol} />
-          <OrderTicket
-            ticket={ticket}
-            submitting={submitting}
-            status={orderStatus}
-            onChange={updateTicket}
-            onSubmit={submitOrder}
-          />
+        <section className="summary-strip">
+          <Stat label={`${bookSource} symbol`} value={selectedSourceLabel} />
+          <Stat label="Best Bid" value={selectedBid} tone="buy" />
+          <Stat label="Best Ask" value={selectedAsk} tone="sell" />
+          <Stat label="Spread" value={selectedSpread} />
+          {bookSource === "internal" ? <Stat label="Trades" value={trades.length} /> : <Stat label="Depth" value={marketBids.length + marketAsks.length} />}
+          {bookSource === "internal" ? <Stat label="Volume" value={volume} /> : <Stat label="Feed" value="Binance" />}
         </section>
 
-        <section className="panel book-panel">
-          <PanelHeader title="Order Book" meta={`sequence ${formatNumber(lastSequence)}`} />
-          <div className="metrics">
-            <Metric label="Best Bid" value={formatNumber(bestBid)} tone="buy" />
-            <Metric label="Best Ask" value={formatNumber(bestAsk)} tone="sell" />
-            <Metric label="Spread" value={formatNumber(spread)} />
-          </div>
-          <BookTable bid={bid} ask={ask} />
-        </section>
+        <section className="desk-body">
+          <section className="primary-column">
+            <div className="module book-module">
+              <div className="module-header">
+                <div>
+                  <span className="label">Book source</span>
+                  <h2>{selectedBookTitle}</h2>
+                </div>
+                <Segmented value={bookSource} onChange={setBookSource} />
+              </div>
+              {bookSource === "internal" ? (
+                <InternalBook bid={internalBid} ask={internalAsk} />
+              ) : (
+                <ExternalBook bids={marketBids} asks={marketAsks} />
+              )}
+            </div>
 
-        <section className="panel market-panel">
-          <PanelHeader title="Binance Market" meta={MARKET_SYMBOL} />
-          <div className="metrics">
-            <Metric label="Best Bid" value={formatNumber(marketBestBid)} tone="buy" />
-            <Metric label="Best Ask" value={formatNumber(marketBestAsk)} tone="sell" />
-            <Metric label="Spread" value={formatNumber(marketSpread)} />
-          </div>
-          <MarketTable snapshot={marketBook} />
-        </section>
+            {bookSource === "internal" ? (
+              <div className="activity-grid">
+                <div className="module">
+                  <ModuleHeader title="Trade Tape" meta={`${numberText(trades.length)} trades`} />
+                  <TradesTable trades={trades} />
+                </div>
+                <div className="module">
+                  <ModuleHeader title="Event Log" meta={`${numberText(events.length)} events`} />
+                  <EventLog events={events} />
+                </div>
+              </div>
+            ) : (
+              <div className="module">
+                <ModuleHeader title="Binance Depth" meta={marketSymbol} />
+                <DepthPreview bids={marketBids} asks={marketAsks} />
+              </div>
+            )}
+          </section>
 
-        <section className="panel">
-          <PanelHeader title="Tape" meta={`${formatNumber(totals.trades)} trades`} />
-          <div className="metrics compact">
-            <Metric label="Volume" value={formatNumber(totals.volume)} />
-            <Metric label="Events" value={formatNumber(events.length)} />
-          </div>
-          <TradesTable trades={trades} />
-        </section>
-
-        <section className="panel events-panel">
-          <PanelHeader title="Event Stream" meta={statusLabel(status)} />
-          <EventLog events={events} />
+          {bookSource === "internal" ? (
+            <aside className="right-rail">
+              <div className="module">
+                <ModuleHeader title="Order Ticket" meta={symbol} />
+                <OrderTicket
+                  ticket={ticket}
+                  submitting={submitting}
+                  status={ticketStatus}
+                  onChange={updateTicket}
+                  onSubmit={submitOrder}
+                />
+              </div>
+              <div className="module">
+                <ModuleHeader title="Session" meta="current" />
+                <div className="session-list">
+                  <Stat label="Trades" value={trades.length} />
+                  <Stat label="Volume" value={volume} />
+                  <Stat label="Events" value={events.length} />
+                </div>
+              </div>
+            </aside>
+          ) : null}
         </section>
       </main>
     </div>
   );
 }
 
-function MarketTable({ snapshot }) {
-  const bids = snapshot.bids || snapshot.Bids || [];
-  const asks = snapshot.asks || snapshot.Asks || [];
-  const rows = [
-    ["Bid", bids[0], "buy"],
-    ["Ask", asks[0], "sell"],
-  ];
-
+function Segmented({ value, onChange }) {
   return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Side</th>
-            <th>Price</th>
-            <th>Quantity</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(([label, level, tone]) => (
-            <tr key={label}>
-              <td className={tone}>{label}</td>
-              <td>{formatNumber(field(level, "price", "Price"))}</td>
-              <td>{formatNumber(field(level, "quantity", "Quantity"))}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="segmented">
+      <button className={value === "internal" ? "active" : ""} type="button" onClick={() => onChange("internal")}>Internal</button>
+      <button className={value === "binance" ? "active" : ""} type="button" onClick={() => onChange("binance")}>Binance</button>
     </div>
   );
 }
 
-function OrderTicket({ ticket, submitting, status, onChange, onSubmit }) {
+function ModuleHeader({ title, meta }) {
   return (
-    <form className="ticket" onSubmit={onSubmit}>
-      <div className="segmented">
-        <button
-          className={ticket.side === "buy" ? "active buy-mode" : ""}
-          type="button"
-          aria-label="Select buy side"
-          onClick={() => onChange("side", "buy")}
-        >
-          <span className="button-label">Buy</span>
-        </button>
-        <button
-          className={ticket.side === "sell" ? "active sell-mode" : ""}
-          type="button"
-          aria-label="Select sell side"
-          onClick={() => onChange("side", "sell")}
-        >
-          <span className="button-label">Sell</span>
-        </button>
-      </div>
-
-      <div className="field-row">
-        <label htmlFor="account">Account</label>
-        <input
-          id="account"
-          value={ticket.accountId}
-          autoComplete="off"
-          onChange={(event) => onChange("accountId", event.target.value)}
-        />
-      </div>
-
-      <div className="field-row">
-        <label htmlFor="order-type">Type</label>
-        <select
-          id="order-type"
-          value={ticket.type}
-          onChange={(event) => onChange("type", event.target.value)}
-        >
-          <option value="limit">Limit</option>
-          <option value="market">Market</option>
-        </select>
-      </div>
-
-      <div className="field-grid">
-        <div className="field-row">
-          <label htmlFor="price">Price</label>
-          <input
-            id="price"
-            type="number"
-            min="1"
-            step="1"
-            value={ticket.price}
-            disabled={ticket.type === "market"}
-            onChange={(event) => onChange("price", event.target.value)}
-          />
-        </div>
-        <div className="field-row">
-          <label htmlFor="quantity">Quantity</label>
-          <input
-            id="quantity"
-            type="number"
-            min="1"
-            step="1"
-            value={ticket.quantity}
-            onChange={(event) => onChange("quantity", event.target.value)}
-          />
-        </div>
-      </div>
-
-      <button className={`submit-order ${ticket.side}-action`} type="submit" disabled={submitting} aria-label="Submit order">
-        <span className="button-label">
-          {submitting ? "Sending" : `${ticket.side === "buy" ? "Buy" : "Sell"} Order`}
-        </span>
-      </button>
-      {status ? <div className="ticket-status">{status}</div> : null}
-    </form>
-  );
-}
-
-function PanelHeader({ title, meta }) {
-  return (
-    <div className="panel-head">
+    <div className="module-header compact">
       <h2>{title}</h2>
       <span>{meta}</span>
     </div>
   );
 }
 
-function Metric({ label, value, tone }) {
+function Stat({ label, value, tone }) {
   return (
-    <div className="metric">
+    <div className="stat">
       <span>{label}</span>
-      <strong className={tone || ""}>{value}</strong>
+      <strong className={tone || ""}>{numberText(value)}</strong>
     </div>
   );
 }
 
-function BookTable({ bid, ask }) {
-  const rows = [
-    ["Bid", bid, "buy"],
-    ["Ask", ask, "sell"],
-  ];
-
+function DepthPreview({ bids, asks }) {
   return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Side</th>
-            <th>Price</th>
-            <th>Quantity</th>
-            <th>Orders</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(([label, level, tone]) => (
-            <tr key={label}>
-              <td className={tone}>{label}</td>
-              <td>{formatNumber(field(level, "price", "Price"))}</td>
-              <td>{formatNumber(field(level, "quantity", "Quantity"))}</td>
-              <td>{formatNumber(field(level, "orders", "Orders"))}</td>
+    <table className="data-table">
+      <thead>
+        <tr>
+          <th>Bid Price</th>
+          <th>Bid Qty</th>
+          <th>Ask Price</th>
+          <th>Ask Qty</th>
+        </tr>
+      </thead>
+      <tbody>
+        {Array.from({ length: Math.max(bids.length, asks.length, 1) }).slice(0, 10).map((_, index) => {
+          const bid = bids[index];
+          const ask = asks[index];
+          return (
+            <tr key={index}>
+              <td className="buy">{scaledText(valueOf(bid, "price", "Price"), 100)}</td>
+              <td>{scaledText(valueOf(bid, "quantity", "Quantity"), 100_000_000)}</td>
+              <td className="sell">{scaledText(valueOf(ask, "price", "Price"), 100)}</td>
+              <td>{scaledText(valueOf(ask, "quantity", "Quantity"), 100_000_000)}</td>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+function OrderTicket({ ticket, submitting, status, onChange, onSubmit }) {
+  return (
+    <form className="ticket" onSubmit={onSubmit}>
+      <div className="side-picker">
+        <button className={ticket.side === "buy" ? "active buy-bg" : ""} type="button" onClick={() => onChange("side", "buy")}>Buy</button>
+        <button className={ticket.side === "sell" ? "active sell-bg" : ""} type="button" onClick={() => onChange("side", "sell")}>Sell</button>
+      </div>
+      <Field label="Account">
+        <input value={ticket.accountId} autoComplete="off" onChange={(event) => onChange("accountId", event.target.value)} />
+      </Field>
+      <Field label="Type">
+        <select value={ticket.type} onChange={(event) => onChange("type", event.target.value)}>
+          <option value="limit">Limit</option>
+          <option value="market">Market</option>
+        </select>
+      </Field>
+      <div className="ticket-pair">
+        <Field label="Price">
+          <input type="number" min="1" step="1" value={ticket.price} disabled={ticket.type === "market"} onChange={(event) => onChange("price", event.target.value)} />
+        </Field>
+        <Field label="Quantity">
+          <input type="number" min="1" step="1" value={ticket.quantity} onChange={(event) => onChange("quantity", event.target.value)} />
+        </Field>
+      </div>
+      <button className={`submit ${ticket.side === "buy" ? "buy-bg" : "sell-bg"}`} type="submit" disabled={submitting}>
+        {submitting ? "Sending" : `${ticket.side === "buy" ? "Buy" : "Sell"} ${ticket.type}`}
+      </button>
+      <div className="ticket-note">{status}</div>
+    </form>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function InternalBook({ bid, ask }) {
+  return (
+    <table className="data-table">
+      <thead>
+        <tr>
+          <th>Side</th>
+          <th>Price</th>
+          <th>Quantity</th>
+          <th>Orders</th>
+        </tr>
+      </thead>
+      <tbody>
+        {[
+          ["Bid", bid, "buy"],
+          ["Ask", ask, "sell"],
+        ].map(([label, level, tone]) => (
+          <tr key={label}>
+            <td className={tone}>{label}</td>
+            <td>{numberText(valueOf(level, "price", "Price"))}</td>
+            <td>{numberText(valueOf(level, "quantity", "Quantity"))}</td>
+            <td>{numberText(valueOf(level, "orders", "Orders"))}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function ExternalBook({ bids, asks }) {
+  return (
+    <table className="data-table">
+      <thead>
+        <tr>
+          <th>Side</th>
+          <th>Price</th>
+          <th>Quantity</th>
+        </tr>
+      </thead>
+      <tbody>
+        {[
+          ["Bid", bids[0], "buy"],
+          ["Ask", asks[0], "sell"],
+        ].map(([label, level, tone]) => (
+          <tr key={label}>
+            <td className={tone}>{label}</td>
+            <td>{scaledText(valueOf(level, "price", "Price"), 100)}</td>
+            <td>{scaledText(valueOf(level, "quantity", "Quantity"), 100_000_000)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
 function TradesTable({ trades }) {
-  const rows = trades.slice(-14).reverse();
-
+  const rows = trades.slice(-10).reverse();
   return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Sequence</th>
-            <th>Maker</th>
-            <th>Taker</th>
-            <th>Price</th>
-            <th>Quantity</th>
+    <table className="data-table">
+      <thead>
+        <tr>
+          <th>Seq</th>
+          <th>Price</th>
+          <th>Qty</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.length === 0 ? (
+          <tr><td className="empty" colSpan="3">No trades</td></tr>
+        ) : rows.map((trade, index) => (
+          <tr key={`${valueOf(trade, "sequence", "Sequence")}-${index}`}>
+            <td>{numberText(valueOf(trade, "sequence", "Sequence"))}</td>
+            <td>{numberText(valueOf(trade, "price", "Price"))}</td>
+            <td>{numberText(valueOf(trade, "quantity", "Quantity"))}</td>
           </tr>
-        </thead>
-        <tbody>
-          {rows.length === 0 ? (
-            <tr>
-              <td className="empty" colSpan="5">No trades yet</td>
-            </tr>
-          ) : rows.map((trade, index) => (
-            <tr key={`${field(trade, "sequence", "Sequence")}-${index}`}>
-              <td>{formatNumber(field(trade, "sequence", "Sequence"))}</td>
-              <td>{field(trade, "maker_order_id", "MakerOrderID") || "-"}</td>
-              <td>{field(trade, "taker_order_id", "TakerOrderID") || "-"}</td>
-              <td>{formatNumber(field(trade, "price", "Price"))}</td>
-              <td>{formatNumber(field(trade, "quantity", "Quantity"))}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
 function EventLog({ events }) {
-  if (events.length === 0) {
-    return <div className="empty-log">No events yet</div>;
-  }
-
+  if (events.length === 0) return <div className="empty-log">No events</div>;
   return (
     <div className="event-log">
       {events.map((event, index) => (
-        <div className="event-row" key={`${field(event, "sequence", "Sequence")}-${field(event, "type", "Type")}-${index}`}>
-          <span>{formatNumber(field(event, "sequence", "Sequence"))}</span>
-          <strong>{field(event, "type", "Type")}</strong>
+        <div className="event-row" key={`${valueOf(event, "sequence", "Sequence")}-${valueOf(event, "type", "Type")}-${index}`}>
+          <span>{numberText(valueOf(event, "sequence", "Sequence"))}</span>
+          <strong>{valueOf(event, "type", "Type")}</strong>
         </div>
       ))}
     </div>

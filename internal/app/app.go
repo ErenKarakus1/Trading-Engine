@@ -112,26 +112,33 @@ func Run() error {
 }
 
 func startMarketData(ctx context.Context, server *api.Server) {
-	symbol := domain.Symbol(getenv("BINANCE_DOMAIN_SYMBOL", "BTC-USDT"))
+	symbols := splitCSV(getenv("BINANCE_DOMAIN_SYMBOLS", "BTC-USDT,ETH-USDT"))
+	for _, symbol := range symbols {
+		startBinanceMarketData(ctx, server, domain.Symbol(symbol))
+	}
+}
+
+func startBinanceMarketData(ctx context.Context, server *api.Server, symbol domain.Symbol) {
 	book := marketdata.NewBook(symbol)
 	server.UseMarketDataBook(symbol, book)
+	streamSymbol := strings.ToLower(strings.ReplaceAll(string(symbol), "-", ""))
 
 	feed, err := marketdata.NewBinanceDepthFeed(ctx, marketdata.BinanceDepthConfig{
-		StreamSymbol:  getenv("BINANCE_STREAM_SYMBOL", "btcusdt"),
-		StreamName:    getenv("BINANCE_STREAM_NAME", "btcusdt@depth20@100ms"),
+		StreamSymbol:  streamSymbol,
+		StreamName:    streamSymbol + "@depth20@100ms",
 		DomainSymbol:  symbol,
 		PriceScale:    100,
 		QuantityScale: 100_000_000,
 	})
 	if err != nil {
-		log.Printf("binance market data disabled: %v", err)
+		log.Printf("binance market data disabled for %s: %v", symbol, err)
 		return
 	}
 
 	syncer := marketdata.NewSyncer(book, feed)
 	go func() {
 		if err := syncer.Run(context.Background()); err != nil {
-			log.Printf("binance market data stopped: %v", err)
+			log.Printf("binance market data stopped for %s: %v", symbol, err)
 		}
 	}()
 }

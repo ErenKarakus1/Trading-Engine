@@ -19,6 +19,9 @@ func TestLimitOrderRestsWhenItDoesNotCross(t *testing.T) {
 	if len(result.Trades) != 0 {
 		t.Fatalf("len(Trades) = %d, want 0", len(result.Trades))
 	}
+	if result.Sequence != 1 {
+		t.Fatalf("Sequence = %d, want 1", result.Sequence)
+	}
 	if !result.Rested {
 		t.Fatal("Rested = false, want true")
 	}
@@ -44,7 +47,11 @@ func TestLimitOrderMatchesAtRestingOrderPrice(t *testing.T) {
 	if result.Rested {
 		t.Fatal("Rested = true, want false")
 	}
+	if result.Sequence != 2 {
+		t.Fatalf("Sequence = %d, want 2", result.Sequence)
+	}
 	assertTrades(t, result.Trades, Trade{
+		Sequence:     2,
 		Symbol:       "BTC-USD",
 		MakerOrderID: "sell-1",
 		TakerOrderID: "buy-1",
@@ -73,9 +80,9 @@ func TestPriceTimePriority(t *testing.T) {
 	}
 
 	assertTrades(t, result.Trades,
-		Trade{Symbol: "BTC-USD", MakerOrderID: "sell-2", TakerOrderID: "buy-1", Price: 99, Quantity: 5},
-		Trade{Symbol: "BTC-USD", MakerOrderID: "sell-3", TakerOrderID: "buy-1", Price: 99, Quantity: 5},
-		Trade{Symbol: "BTC-USD", MakerOrderID: "sell-1", TakerOrderID: "buy-1", Price: 100, Quantity: 2},
+		Trade{Sequence: 4, Symbol: "BTC-USD", MakerOrderID: "sell-2", TakerOrderID: "buy-1", Price: 99, Quantity: 5},
+		Trade{Sequence: 4, Symbol: "BTC-USD", MakerOrderID: "sell-3", TakerOrderID: "buy-1", Price: 99, Quantity: 5},
+		Trade{Sequence: 4, Symbol: "BTC-USD", MakerOrderID: "sell-1", TakerOrderID: "buy-1", Price: 100, Quantity: 2},
 	)
 }
 
@@ -90,6 +97,9 @@ func TestMarketOrderDoesNotRest(t *testing.T) {
 
 	if result.Rested {
 		t.Fatal("Rested = true, want false")
+	}
+	if result.Sequence != 2 {
+		t.Fatalf("Sequence = %d, want 2", result.Sequence)
 	}
 	if result.Remaining != 5 {
 		t.Fatalf("Remaining = %d, want 5", result.Remaining)
@@ -110,7 +120,7 @@ func TestSymbolsAreIsolated(t *testing.T) {
 	}
 
 	assertTrades(t, result.Trades,
-		Trade{Symbol: "ETH-USD", MakerOrderID: "eth-buy-1", TakerOrderID: "eth-sell-1", Price: 150, Quantity: 3},
+		Trade{Sequence: 3, Symbol: "ETH-USD", MakerOrderID: "eth-buy-1", TakerOrderID: "eth-sell-1", Price: 150, Quantity: 3},
 	)
 
 	btcAsk, ok := engine.BestAsk("BTC-USD")
@@ -126,15 +136,34 @@ func TestCancelRestingOrder(t *testing.T) {
 	engine := NewEngine()
 	mustSubmit(t, engine, limit("buy-1", domain.SideBuy, 100, 10))
 
-	order, err := engine.Cancel("BTC-USD", "buy-1")
+	result, err := engine.Cancel("BTC-USD", "buy-1")
 	if err != nil {
 		t.Fatalf("Cancel() error = %v", err)
 	}
-	if order.ID != "buy-1" {
-		t.Fatalf("Cancel() ID = %q, want buy-1", order.ID)
+	if result.Sequence != 2 {
+		t.Fatalf("Sequence = %d, want 2", result.Sequence)
+	}
+	if result.Order.ID != "buy-1" {
+		t.Fatalf("Cancel() ID = %q, want buy-1", result.Order.ID)
 	}
 	if _, ok := engine.BestBid("BTC-USD"); ok {
 		t.Fatal("BestBid() ok = true, want false")
+	}
+}
+
+func TestRejectedOrdersDoNotConsumeSequenceNumbers(t *testing.T) {
+	engine := NewEngine()
+
+	if _, err := engine.Submit(limit("", domain.SideBuy, 100, 1)); err == nil {
+		t.Fatal("Submit() error = nil, want error")
+	}
+
+	result, err := engine.Submit(limit("buy-1", domain.SideBuy, 100, 1))
+	if err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+	if result.Sequence != 1 {
+		t.Fatalf("Sequence = %d, want 1", result.Sequence)
 	}
 }
 

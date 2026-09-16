@@ -4,6 +4,8 @@ type OrderID string
 
 type Symbol string
 
+type Sequence int64
+
 type Quantity int64
 
 type Side string

@@ -20,6 +20,7 @@ type Order struct {
 }
 
 type Trade struct {
+	Sequence     domain.Sequence
 	Symbol       domain.Symbol
 	MakerOrderID domain.OrderID
 	TakerOrderID domain.OrderID
@@ -28,15 +29,23 @@ type Trade struct {
 }
 
 type Result struct {
+	Sequence  domain.Sequence
 	Accepted  Order
 	Trades    []Trade
 	Remaining domain.Quantity
 	Rested    bool
 }
 
+type CancelResult struct {
+	Sequence domain.Sequence
+	Order    orderbook.Order
+}
+
 type Engine struct {
-	mu    sync.Mutex
-	books map[domain.Symbol]*symbolBook
+	mu           sync.Mutex
+	seqMu        sync.Mutex
+	nextSequence domain.Sequence
+	books        map[domain.Symbol]*symbolBook
 }
 
 type symbolBook struct {
@@ -95,15 +104,28 @@ func (e *Engine) Submit(order Order) (Result, error) {
 		result.Rested = true
 	}
 
+	result.Sequence = e.sequence()
+	for i := range result.Trades {
+		result.Trades[i].Sequence = result.Sequence
+	}
+
 	return result, nil
 }
 
-func (e *Engine) Cancel(symbol domain.Symbol, orderID domain.OrderID) (orderbook.Order, error) {
+func (e *Engine) Cancel(symbol domain.Symbol, orderID domain.OrderID) (CancelResult, error) {
 	symbolBook := e.symbolBook(symbol)
 	symbolBook.mu.Lock()
 	defer symbolBook.mu.Unlock()
 
-	return symbolBook.book.Cancel(orderID)
+	order, err := symbolBook.book.Cancel(orderID)
+	if err != nil {
+		return CancelResult{}, err
+	}
+
+	return CancelResult{
+		Sequence: e.sequence(),
+		Order:    order,
+	}, nil
 }
 
 func (e *Engine) BestBid(symbol domain.Symbol) (orderbook.PriceLevel, bool) {
@@ -132,6 +154,14 @@ func (e *Engine) symbolBook(symbol domain.Symbol) *symbolBook {
 		e.books[symbol] = book
 	}
 	return book
+}
+
+func (e *Engine) sequence() domain.Sequence {
+	e.seqMu.Lock()
+	defer e.seqMu.Unlock()
+
+	e.nextSequence++
+	return e.nextSequence
 }
 
 func validate(order Order) error {

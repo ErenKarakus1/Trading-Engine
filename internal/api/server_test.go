@@ -159,6 +159,35 @@ func TestGetTrades(t *testing.T) {
 	}
 }
 
+func TestMetricsEndpoint(t *testing.T) {
+	server := newTestServer(nil, nil)
+	postJSON(t, server, "/orders", orderRequest{
+		AccountID: "account-1",
+		ID:        "buy-1",
+		Symbol:    "BTC-USD",
+		Side:      domain.SideBuy,
+		Type:      domain.OrderTypeLimit,
+		Price:     100,
+		Quantity:  5,
+	})
+
+	response := httptest.NewRecorder()
+	server.Router().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	body := response.Body.String()
+	for _, metric := range []string{
+		"trading_engine_http_requests_total",
+		"trading_engine_orders_accepted_total",
+	} {
+		if !strings.Contains(body, metric) {
+			t.Fatalf("metrics body does not contain %q", metric)
+		}
+	}
+}
+
 func TestOrderBookWebSocketReceivesSnapshotAndEvents(t *testing.T) {
 	server := newTestServer(nil, nil)
 	httpServer := httptest.NewServer(server.Router())

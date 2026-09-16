@@ -4,14 +4,17 @@ import (
 	"errors"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/ErenKarakus1/Trading-Engine/internal/domain"
 	"github.com/ErenKarakus1/Trading-Engine/internal/matching"
+	"github.com/ErenKarakus1/Trading-Engine/internal/observability"
 	"github.com/ErenKarakus1/Trading-Engine/internal/orderbook"
 	"github.com/ErenKarakus1/Trading-Engine/internal/ratelimit"
 	"github.com/ErenKarakus1/Trading-Engine/internal/risk"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type RateLimiter interface {
@@ -27,6 +30,7 @@ type Server struct {
 	riskChecker RiskChecker
 	limiter     RateLimiter
 	upgrader    websocket.Upgrader
+	metrics     *observability.Metrics
 
 	mu       sync.Mutex
 	accounts map[risk.AccountID]risk.Account
@@ -52,6 +56,7 @@ func NewServer(matcher *matching.Engine, riskChecker RiskChecker, limiter RateLi
 		riskChecker: riskChecker,
 		limiter:     limiter,
 		upgrader:    websocket.Upgrader{},
+		metrics:     observability.NewMetrics(),
 		accounts:    make(map[risk.AccountID]risk.Account),
 		orders:      make(map[domain.OrderID]orderRecord),
 		clients:     make(map[domain.Symbol]map[*websocket.Conn]struct{}),
@@ -64,6 +69,8 @@ func NewServer(matcher *matching.Engine, riskChecker RiskChecker, limiter RateLi
 
 func (s *Server) Router() *gin.Engine {
 	router := gin.New()
+	router.Use(s.metricsMiddleware())
+	router.GET("/metrics", gin.WrapH(promhttp.HandlerFor(s.metrics.Registry(), promhttp.HandlerOpts{})))
 	router.POST("/orders", s.handlePostOrder)
 	router.DELETE("/orders/:id", s.handleDeleteOrder)
 	router.GET("/orders/:id", s.handleGetOrder)
@@ -86,16 +93,19 @@ type orderRequest struct {
 func (s *Server) handlePostOrder(c *gin.Context) {
 	var request orderRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
+		s.metrics.OrderRejected("invalid_json")
 		writeError(c, http.StatusBadRequest, "invalid_json")
 		return
 	}
 
 	account, ok := s.account(risk.AccountID(request.AccountID))
 	if !ok {
+		s.metrics.OrderRejected("account_not_found")
 		writeError(c, http.StatusNotFound, "account_not_found")
 		return
 	}
 	if err := s.allow(c, request.AccountID); err != nil {
+		s.metrics.OrderRejected(err.Error())
 		writeRateLimitError(c, err)
 		return
 	}
@@ -110,6 +120,7 @@ func (s *Server) handlePostOrder(c *gin.Context) {
 	}
 	if s.riskChecker != nil {
 		if err := s.riskChecker.Check(account, order); err != nil {
+			s.metrics.OrderRejected(err.Error())
 			writeError(c, http.StatusForbidden, err.Error())
 			return
 		}
@@ -117,10 +128,13 @@ func (s *Server) handlePostOrder(c *gin.Context) {
 
 	result, err := s.matcher.Submit(order)
 	if err != nil {
+		s.metrics.OrderRejected(err.Error())
 		writeError(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	s.recordSubmit(result)
+	s.metrics.OrderAccepted(string(result.Accepted.Symbol), string(result.Accepted.Side))
+	s.metrics.TradesExecuted(string(result.Accepted.Symbol), len(result.Trades))
 	s.broadcast(result.Accepted.Symbol, websocketMessage{
 		Type:   "events",
 		Events: result.Events,
@@ -214,10 +228,14 @@ func (s *Server) handleOrderBookSocket(c *gin.Context) {
 		return
 	}
 	s.addClient(symbol, conn)
+	s.metrics.WebSocketConnected(string(symbol))
 	defer s.removeClient(symbol, conn)
+	defer s.metrics.WebSocketDisconnected(string(symbol))
 	defer conn.Close()
 
-	_ = conn.WriteJSON(s.orderBookSnapshot(symbol))
+	if err := conn.WriteJSON(s.orderBookSnapshot(symbol)); err == nil {
+		s.metrics.WebSocketMessage(string(symbol), "snapshot")
+	}
 	for {
 		if _, _, err := conn.NextReader(); err != nil {
 			return
@@ -357,7 +375,22 @@ func (s *Server) broadcast(symbol domain.Symbol, message websocketMessage) {
 		if err := client.WriteJSON(message); err != nil {
 			s.removeClient(symbol, client)
 			_ = client.Close()
+			continue
 		}
+		s.metrics.WebSocketMessage(string(symbol), message.Type)
+	}
+}
+
+func (s *Server) metricsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+
+		path := c.FullPath()
+		if path == "" {
+			path = c.Request.URL.Path
+		}
+		s.metrics.ObserveHTTPRequest(c.Request.Method, path, c.Writer.Status(), time.Since(start))
 	}
 }
 

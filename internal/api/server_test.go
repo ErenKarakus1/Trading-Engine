@@ -108,6 +108,41 @@ func TestGetOrderBook(t *testing.T) {
 	}
 }
 
+func TestSeedOrdersPopulatesBookAndTrades(t *testing.T) {
+	server := newTestServer(nil, nil)
+	err := server.SeedOrders([]matching.Order{
+		{ID: "seed-buy-1", Symbol: "BTC-USD", Side: domain.SideBuy, Type: domain.OrderTypeLimit, Price: 100, Quantity: 10},
+		{ID: "seed-sell-1", Symbol: "BTC-USD", Side: domain.SideSell, Type: domain.OrderTypeLimit, Price: 102, Quantity: 8},
+		{ID: "seed-sell-2", Symbol: "BTC-USD", Side: domain.SideSell, Type: domain.OrderTypeLimit, Price: 100, Quantity: 3},
+	})
+	if err != nil {
+		t.Fatalf("SeedOrders() error = %v", err)
+	}
+
+	bookResponse := httptest.NewRecorder()
+	server.Router().ServeHTTP(bookResponse, httptest.NewRequest(http.MethodGet, "/orderbook/BTC-USD", nil))
+	var book orderBookResponse
+	if err := json.NewDecoder(bookResponse.Body).Decode(&book); err != nil {
+		t.Fatalf("Decode(book) error = %v", err)
+	}
+	if book.BestBid == nil || book.BestBid.Price != 100 || book.BestBid.Quantity != 7 {
+		t.Fatalf("BestBid = %+v, want price 100 quantity 7", book.BestBid)
+	}
+	if book.BestAsk == nil || book.BestAsk.Price != 102 || book.BestAsk.Quantity != 8 {
+		t.Fatalf("BestAsk = %+v, want price 102 quantity 8", book.BestAsk)
+	}
+
+	tradesResponse := httptest.NewRecorder()
+	server.Router().ServeHTTP(tradesResponse, httptest.NewRequest(http.MethodGet, "/trades/BTC-USD", nil))
+	var trades []matching.Trade
+	if err := json.NewDecoder(tradesResponse.Body).Decode(&trades); err != nil {
+		t.Fatalf("Decode(trades) error = %v", err)
+	}
+	if len(trades) != 1 || trades[0].Quantity != 3 {
+		t.Fatalf("trades = %+v, want one seeded trade quantity 3", trades)
+	}
+}
+
 func TestDeleteOrderCancelsRestingOrder(t *testing.T) {
 	server := newTestServer(nil, nil)
 	postJSON(t, server, "/orders", orderRequest{

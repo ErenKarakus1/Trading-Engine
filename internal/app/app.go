@@ -90,8 +90,8 @@ func Run() error {
 				ID:   "demo",
 				Cash: 1_000_000_000,
 				Positions: map[domain.Symbol]domain.Quantity{
-					"BTC-USD": 1_000_000,
-					"ETH-USD": 1_000_000,
+					"BTC-USD": 500_000,
+					"ETH-USD": 500_000,
 				},
 			},
 		},
@@ -102,8 +102,40 @@ func Run() error {
 	if publisher != nil {
 		server.UseEventPublisher(publisher)
 	}
+	if err := server.SeedOrders(startupOrders()); err != nil {
+		log.Printf("startup orders disabled: %v", err)
+	}
 
 	return http.ListenAndServe(addr, server.Router())
+}
+
+func startupOrders() []matching.Order {
+	return []matching.Order{
+		{
+			ID:       "seed-buy-1",
+			Symbol:   "BTC-USD",
+			Side:     domain.SideBuy,
+			Type:     domain.OrderTypeLimit,
+			Price:    100,
+			Quantity: 10,
+		},
+		{
+			ID:       "seed-sell-1",
+			Symbol:   "BTC-USD",
+			Side:     domain.SideSell,
+			Type:     domain.OrderTypeLimit,
+			Price:    102,
+			Quantity: 8,
+		},
+		{
+			ID:       "seed-sell-2",
+			Symbol:   "BTC-USD",
+			Side:     domain.SideSell,
+			Type:     domain.OrderTypeLimit,
+			Price:    100,
+			Quantity: 3,
+		},
+	}
 }
 
 func getenv(key, fallback string) string {

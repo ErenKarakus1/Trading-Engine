@@ -93,6 +93,17 @@ func sameMachineOrigin(r *http.Request) bool {
 		strings.HasPrefix(origin, "https://localhost:")
 }
 
+func (s *Server) SeedOrders(orders []matching.Order) error {
+	for _, order := range orders {
+		result, err := s.matcher.Submit(order)
+		if err != nil {
+			return err
+		}
+		s.recordSubmit(result)
+	}
+	return nil
+}
+
 func (s *Server) UseEventStore(store EventStore) {
 	s.eventStore = store
 }

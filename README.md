@@ -542,7 +542,8 @@ Prometheus and Grafana are included in Docker Compose.
 
 ## Future Improvements
 
-* Authentication and account management
+* Authentication and user management
+* Persistent account management, balance updates, and trade settlement
 * Admin tools for accounts, balances, and positions
 * Transactional outbox for reliable Kafka publishing
 * Historical replay UI

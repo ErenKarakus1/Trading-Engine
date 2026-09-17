@@ -70,6 +70,23 @@ function mergeTrades(current, incoming, symbol) {
   return next;
 }
 
+function mergeEvents(current, incoming) {
+  const next = [...incoming, ...current];
+  const seen = new Set();
+  return next.filter((event) => {
+    const key = [
+      valueOf(event, "sequence", "Sequence"),
+      valueOf(event, "type", "Type"),
+      tradeKey(eventTrade(event) || {}),
+      valueOf(valueOf(event, "order", "Order"), "id", "ID"),
+      valueOf(valueOf(event, "cancel", "Cancel"), "id", "ID"),
+    ].join(":");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 120);
+}
+
 function App() {
   const [symbol, setSymbol] = useState(DEFAULT_SYMBOL);
   const [symbolInput, setSymbolInput] = useState(DEFAULT_SYMBOL);
@@ -95,47 +112,54 @@ function App() {
 
   const refresh = useCallback(async (activeSymbol) => {
     const encoded = encodeURIComponent(activeSymbol);
-    const [bookResponse, tradesResponse] = await Promise.all([
+    const [bookResponse, tradesResponse, eventsResponse] = await Promise.all([
       fetch(`/orderbook/${encoded}`),
       fetch(`/trades/${encoded}`),
+      fetch(`/events/${encoded}?limit=120`),
     ]);
     if (!bookResponse.ok) throw new Error(`orderbook ${bookResponse.status}`);
     if (!tradesResponse.ok) throw new Error(`trades ${tradesResponse.status}`);
+    if (!eventsResponse.ok) throw new Error(`events ${eventsResponse.status}`);
     setBook(await bookResponse.json());
     setTrades(await tradesResponse.json());
+    setEvents(await eventsResponse.json());
     setError("");
   }, []);
 
   useEffect(() => {
     let active = true;
     setConnection("connecting");
-    refresh(symbol).catch((err) => active && setError(err.message));
 
     if (internalSocket.current) internalSocket.current.close();
-    const protocol = location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${protocol}://${location.host}/ws/orderbook/${encodeURIComponent(symbol)}`);
-    internalSocket.current = socket;
-    socket.onopen = () => active && setConnection("live");
-    socket.onerror = () => active && setError("internal websocket unavailable");
-    socket.onclose = () => active && setConnection("offline");
-    socket.onmessage = (event) => {
-      const message = JSON.parse(event.data);
-      if (message.type === "snapshot" && message.book) setBook(message.book);
-      if (message.type === "events") {
-        setEvents((current) => [...message.events, ...current].slice(0, 120));
-        const newTrades = message.events
-          .filter((item) => eventType(item) === "trade_executed")
-          .map(eventTrade)
-          .filter(Boolean);
-        if (newTrades.length > 0) {
-          setTrades((current) => mergeTrades(current, newTrades, symbol));
-        }
-        refresh(symbol).catch((err) => active && setError(err.message));
-      }
-    };
+    refresh(symbol)
+      .then(() => {
+        if (!active) return;
+        const protocol = location.protocol === "https:" ? "wss" : "ws";
+        const socket = new WebSocket(`${protocol}://${location.host}/ws/orderbook/${encodeURIComponent(symbol)}`);
+        internalSocket.current = socket;
+        socket.onopen = () => active && setConnection("live");
+        socket.onerror = () => active && setError("internal websocket unavailable");
+        socket.onclose = () => active && setConnection("offline");
+        socket.onmessage = (event) => {
+          const message = JSON.parse(event.data);
+          if (message.type === "snapshot" && message.book) setBook(message.book);
+          if (message.type === "events") {
+            setEvents((current) => mergeEvents(current, message.events));
+            const newTrades = message.events
+              .filter((item) => eventType(item) === "trade_executed")
+              .map(eventTrade)
+              .filter(Boolean);
+            if (newTrades.length > 0) {
+              setTrades((current) => mergeTrades(current, newTrades, symbol));
+            }
+            refresh(symbol).catch((err) => active && setError(err.message));
+          }
+        };
+      })
+      .catch((err) => active && setError(err.message));
     return () => {
       active = false;
-      socket.close();
+      if (internalSocket.current) internalSocket.current.close();
     };
   }, [refresh, symbol]);
 

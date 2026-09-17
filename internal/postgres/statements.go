@@ -113,6 +113,24 @@ FROM engine_events
 WHERE sequence > $1
 ORDER BY sequence, event_index`
 
+const selectEventsBySymbolSQL = `
+SELECT
+    sequence,
+    event_index,
+    event_type,
+    symbol,
+    order_id,
+    side,
+    order_type,
+    price,
+    quantity,
+    maker_order_id,
+    taker_order_id
+FROM engine_events
+WHERE symbol = $1
+ORDER BY sequence DESC, event_index DESC
+LIMIT $2`
+
 const selectTradesBySymbolSQL = `
 SELECT sequence, symbol, maker_order_id, taker_order_id, price, quantity
 FROM trades

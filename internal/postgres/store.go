@@ -83,30 +83,17 @@ func (s *Store) EventsAfter(ctx context.Context, sequence domain.Sequence) ([]ma
 	}
 	defer rows.Close()
 
-	events := make([]matching.Event, 0)
-	for rows.Next() {
-		var row eventQueryRow
-		if err := rows.Scan(
-			&row.Sequence,
-			&row.Index,
-			&row.Type,
-			&row.Symbol,
-			&row.OrderID,
-			&row.Side,
-			&row.OrderType,
-			&row.Price,
-			&row.Quantity,
-			&row.MakerOrderID,
-			&row.TakerOrderID,
-		); err != nil {
-			return nil, err
-		}
-		events = append(events, eventFromRow(row))
-	}
-	if err := rows.Err(); err != nil {
+	return scanEvents(rows)
+}
+
+func (s *Store) EventsBySymbol(ctx context.Context, symbol domain.Symbol, limit int) ([]matching.Event, error) {
+	rows, err := s.pool.Query(ctx, selectEventsBySymbolSQL, symbol, limit)
+	if err != nil {
 		return nil, err
 	}
-	return events, nil
+	defer rows.Close()
+
+	return scanEvents(rows)
 }
 
 func (s *Store) TradesBySymbol(ctx context.Context, symbol domain.Symbol) ([]matching.Trade, error) {
@@ -167,6 +154,33 @@ func saveEvent(ctx context.Context, tx pgx.Tx, event matching.Event, index int) 
 	default:
 		return nil
 	}
+}
+
+func scanEvents(rows pgx.Rows) ([]matching.Event, error) {
+	events := make([]matching.Event, 0)
+	for rows.Next() {
+		var row eventQueryRow
+		if err := rows.Scan(
+			&row.Sequence,
+			&row.Index,
+			&row.Type,
+			&row.Symbol,
+			&row.OrderID,
+			&row.Side,
+			&row.OrderType,
+			&row.Price,
+			&row.Quantity,
+			&row.MakerOrderID,
+			&row.TakerOrderID,
+		); err != nil {
+			return nil, err
+		}
+		events = append(events, eventFromRow(row))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
 }
 
 func saveAcceptedOrder(ctx context.Context, tx pgx.Tx, event matching.Event) error {

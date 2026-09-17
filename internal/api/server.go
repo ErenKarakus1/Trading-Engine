@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,7 @@ type RiskChecker interface {
 type EventStore interface {
 	SaveEvents(context.Context, []matching.Event) error
 	SaveSnapshot(context.Context, matching.Snapshot) error
+	EventsBySymbol(context.Context, domain.Symbol, int) ([]matching.Event, error)
 }
 
 type EventPublisher interface {
@@ -50,6 +52,7 @@ type Server struct {
 	mu          sync.Mutex
 	accounts    map[risk.AccountID]risk.Account
 	orders      map[domain.OrderID]orderRecord
+	events      []matching.Event
 	trades      []matching.Trade
 	clients     map[domain.Symbol]map[*websocket.Conn]struct{}
 	marketBooks map[domain.Symbol]*marketdata.Book
@@ -153,6 +156,7 @@ func (s *Server) Router() *gin.Engine {
 	router.GET("/orders/:id", s.handleGetOrder)
 	router.GET("/orderbook/:symbol", s.handleGetOrderBook)
 	router.GET("/trades/:symbol", s.handleGetTrades)
+	router.GET("/events/:symbol", s.handleGetEvents)
 	router.GET("/marketdata/:symbol", s.handleGetMarketData)
 	router.GET("/ws/orderbook/:symbol", s.handleOrderBookSocket)
 	router.GET("/ws/marketdata/:symbol", s.handleMarketDataSocket)
@@ -301,6 +305,42 @@ func (s *Server) handleGetTrades(c *gin.Context) {
 	c.JSON(http.StatusOK, trades)
 }
 
+func (s *Server) handleGetEvents(c *gin.Context) {
+	symbol := domain.Symbol(c.Param("symbol"))
+	if symbol == "" {
+		writeError(c, http.StatusBadRequest, "missing_symbol")
+		return
+	}
+
+	limit := 120
+	if rawLimit := c.Query("limit"); rawLimit != "" {
+		parsed, err := strconv.Atoi(rawLimit)
+		if err != nil || parsed < 1 {
+			writeError(c, http.StatusBadRequest, "invalid_limit")
+			return
+		}
+		limit = parsed
+	}
+	if limit > 500 {
+		limit = 500
+	}
+
+	if s.eventStore != nil {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+		defer cancel()
+		events, err := s.eventStore.EventsBySymbol(ctx, symbol, limit)
+		if err != nil {
+			log.Printf("load events: %v", err)
+			writeError(c, http.StatusInternalServerError, "events_unavailable")
+			return
+		}
+		c.JSON(http.StatusOK, events)
+		return
+	}
+
+	c.JSON(http.StatusOK, s.recentEvents(symbol, limit))
+}
+
 func (s *Server) handleGetMarketData(c *gin.Context) {
 	snapshot, ok := s.marketDataSnapshot(domain.Symbol(c.Param("symbol")))
 	if !ok {
@@ -433,6 +473,7 @@ func (s *Server) recordSubmit(result matching.Result) {
 		Remaining: result.Remaining,
 		Status:    status,
 	}
+	s.events = append(s.events, result.Events...)
 	for _, trade := range result.Trades {
 		s.trades = append(s.trades, trade)
 		if maker, ok := s.orders[trade.MakerOrderID]; ok {
@@ -461,6 +502,7 @@ func (s *Server) recordCancel(result matching.CancelResult) {
 	record.Remaining = 0
 	record.Status = "canceled"
 	s.orders[result.Order.ID] = record
+	s.events = append(s.events, result.Event)
 }
 
 func (s *Server) restoreSnapshotRecords(snapshot matching.Snapshot) {
@@ -498,6 +540,7 @@ func (s *Server) recordEvent(event matching.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.events = append(s.events, event)
 	switch event.Type {
 	case domain.EventTypeOrderAccepted:
 		if event.Order != nil {
@@ -532,6 +575,19 @@ func (s *Server) recordEvent(event matching.Event) {
 			s.orders[event.Cancel.ID] = record
 		}
 	}
+}
+
+func (s *Server) recentEvents(symbol domain.Symbol, limit int) []matching.Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	events := make([]matching.Event, 0, limit)
+	for i := len(s.events) - 1; i >= 0 && len(events) < limit; i-- {
+		if eventSymbol(s.events[i]) == symbol {
+			events = append(events, s.events[i])
+		}
+	}
+	return events
 }
 
 func (s *Server) reduceRecordedOrder(orderID domain.OrderID, quantity domain.Quantity, sequence domain.Sequence) {
@@ -660,6 +716,19 @@ func eventSymbols(events []matching.Event) []domain.Symbol {
 		symbols = append(symbols, symbol)
 	}
 	return symbols
+}
+
+func eventSymbol(event matching.Event) domain.Symbol {
+	switch {
+	case event.Order != nil:
+		return event.Order.Symbol
+	case event.Trade != nil:
+		return event.Trade.Symbol
+	case event.Cancel != nil:
+		return event.Cancel.Symbol
+	default:
+		return ""
+	}
 }
 
 func (s *Server) metricsMiddleware() gin.HandlerFunc {

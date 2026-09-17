@@ -270,6 +270,39 @@ func TestGetTrades(t *testing.T) {
 	}
 }
 
+func TestGetEventsReturnsRecentSymbolEvents(t *testing.T) {
+	server := newTestServer(nil, nil)
+	postJSON(t, server, "/orders", orderRequest{AccountID: "account-1", ID: "sell-1", Symbol: "BTC-USD", Side: domain.SideSell, Type: domain.OrderTypeLimit, Price: 100, Quantity: 5})
+	postJSON(t, server, "/orders", orderRequest{AccountID: "account-1", ID: "buy-1", Symbol: "BTC-USD", Side: domain.SideBuy, Type: domain.OrderTypeLimit, Price: 100, Quantity: 3})
+
+	response := httptest.NewRecorder()
+	server.Router().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/events/BTC-USD?limit=2", nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	var events []matching.Event
+	if err := json.NewDecoder(response.Body).Decode(&events); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("len(events) = %d, want 2", len(events))
+	}
+	if events[0].Type != domain.EventTypeTradeExecuted || events[1].Type != domain.EventTypeOrderAccepted {
+		t.Fatalf("events = %+v, want newest sequence events first", events)
+	}
+}
+
+func TestGetEventsRejectsInvalidLimit(t *testing.T) {
+	server := newTestServer(nil, nil)
+	response := httptest.NewRecorder()
+	server.Router().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/events/BTC-USD?limit=bad", nil))
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+}
+
 func TestMetricsEndpoint(t *testing.T) {
 	server := newTestServer(nil, nil)
 	postJSON(t, server, "/orders", orderRequest{

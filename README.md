@@ -464,6 +464,16 @@ KAFKA_TOPIC=trading-engine-events
 BINANCE_DOMAIN_SYMBOLS=BTC-USDT,ETH-USDT
 ```
 
+### Environment File
+
+A sample environment file is provided:
+
+```bash
+cp .env.example .env
+```
+
+Docker Compose already includes working service defaults in `docker-compose.yml`, so copying `.env.example` is mainly useful for local non-Docker runs.
+
 ### Run Frontend Locally
 
 ```bash

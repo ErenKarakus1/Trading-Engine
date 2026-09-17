@@ -2,5 +2,7 @@ bin/
 dist/
 coverage.out
 *.test
+.env
+.env.local
 web/dist/
 web/node_modules/

@@ -45,7 +45,7 @@ A Go trading engine with deterministic limit-order matching, risk checks, event 
 * Redis-backed Gin rate limiting
 * PostgreSQL event, order, trade, position, and snapshot storage
 * Kafka publishing for matching events
-* Replay and snapshot primitives
+* Startup restore from snapshots, replayed events, and persisted trades
 * Execution/slippage simulator using market-data snapshots
 * WebSocket updates for internal order-book events
 * WebSocket updates for external market data
@@ -243,7 +243,13 @@ PostgreSQL persistence includes:
 
 Kafka publishing is used for matching events through the `trading-engine-events` topic.
 
-Event persistence and publishing happen after matching so external I/O does not sit inside the matching hot path.
+PostgreSQL event and snapshot persistence completes before an order response is returned, so restart recovery can restore the order book, trade tape, and recent event history. Kafka publishing is asynchronous and is not used as the recovery source.
+
+On startup, the API restores the configured internal symbol from:
+
+* The latest engine snapshot
+* Matching events after that snapshot
+* Persisted trades for the trade tape
 
 ## API Endpoints
 
@@ -281,6 +287,13 @@ http://localhost:8080
 | ------ | -------------------- | ---------------------------- |
 | GET    | `/orderbook/:symbol` | Internal best bid / best ask |
 | GET    | `/trades/:symbol`    | Internal trade tape          |
+| GET    | `/events/:symbol`    | Recent internal event log    |
+
+Example:
+
+```text
+GET /events/BTC-USD?limit=120
+```
 
 ### Market Data
 
@@ -314,7 +327,7 @@ erDiagram
     ENGINE_EVENTS {
         bigint sequence
         int event_index
-        text type
+        text event_type
         text symbol
         text order_id
         text side
@@ -331,11 +344,13 @@ erDiagram
         text side
         text order_type
         bigint price
-        bigint quantity
+        bigint original_quantity
         bigint remaining_quantity
         text status
-        bigint created_sequence
+        bigint accepted_sequence
         bigint updated_sequence
+        timestamptz created_at
+        timestamptz updated_at
     }
 
     TRADES {
@@ -379,11 +394,11 @@ The React dashboard supports:
 * Internal/Binance book switching
 * Internal order entry
 * Trade tape
-* Event log
+* Event log rehydrated from REST on load
 * Session stats
 * Live WebSocket updates
 
-In **Internal** mode, the dashboard shows order entry, internal trades, internal volume, and matching events.
+In **Internal** mode, the dashboard shows order entry, internal trades, internal volume, and matching events. On page load, it fetches the latest order book, trade tape, and recent events, then appends live WebSocket events.
 
 In **Binance** mode, the dashboard is read-only and shows external market depth. Orders are not sent to Binance.
 
@@ -506,6 +521,7 @@ Prometheus and Grafana are included in Docker Compose.
 * Binance connectivity depends on local network access.
 * Market-data symbol support is configured at startup.
 * PostgreSQL, Redis, and Kafka failures are logged and may disable related features.
+* Startup restore is currently centered on the configured snapshot symbol.
 * The dashboard is an operator UI, not a broker-grade trading frontend.
 
 ## Future Improvements
@@ -513,7 +529,6 @@ Prometheus and Grafana are included in Docker Compose.
 * Authentication and account management
 * Admin tools for accounts, balances, and positions
 * Transactional outbox for reliable Kafka publishing
-* Snapshot restore on application startup
 * Historical replay UI
 * Better multi-symbol market-data management
 * More complete Binance REST snapshot bootstrapping

@@ -398,7 +398,9 @@ The React dashboard supports:
 * Session stats
 * Live WebSocket updates
 
-In **Internal** mode, the dashboard shows the Order Ticket, internal trades, internal volume, and matching events. The Order Ticket account field is editable, but the seeded `demo` account is the only default account. On page load, it fetches the latest order book, trade tape, and recent events, then appends live WebSocket events.
+In **Internal** mode, the dashboard shows the Order Ticket, internal trades, internal volume, and matching events. The Order Ticket account field is editable, but the seeded `demo` account is the only default account; any other account ID returns `account_not_found`.
+
+On page load, the dashboard fetches the latest order book, trade tape, and recent events, then appends live WebSocket events.
 
 In **Binance** mode, the dashboard is read-only and shows external market depth. Orders are not sent to Binance.
 

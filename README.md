@@ -531,7 +531,7 @@ Prometheus and Grafana are included in Docker Compose.
 
 * This is a simulation and not a production exchange.
 * There is no real authentication or user management.
-* Demo account balances and positions are seeded in code.
+* Demo account balances and positions are seeded in code and used for risk checks only; trades do not settle balances or positions.
 * Kafka publishing is not implemented as a transactional outbox.
 * Binance market data uses WebSocket depth snapshots and does not place orders on Binance.
 * Binance connectivity depends on local network access.

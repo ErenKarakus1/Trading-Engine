@@ -440,6 +440,10 @@ username: admin
 password: admin
 ```
 
+### Demo Account
+
+The API starts with a seeded `demo` account for local testing. Additional accounts are not exposed through the API yet.
+
 ### Run Backend Locally
 
 ```bash

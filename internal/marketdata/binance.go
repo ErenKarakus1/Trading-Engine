@@ -36,25 +36,31 @@ func NewBinanceDepthFeed(ctx context.Context, config BinanceDepthConfig) (*Binan
 }
 
 func (f *BinanceDepthFeed) Next(ctx context.Context) (Message, error) {
-	type readResult struct {
-		payload []byte
-		err     error
+	if err := ctx.Err(); err != nil {
+		return Message{}, err
 	}
-	ch := make(chan readResult, 1)
-	go func() {
-		_, payload, err := f.conn.ReadMessage()
-		ch <- readResult{payload: payload, err: err}
-	}()
 
-	select {
-	case <-ctx.Done():
-		return Message{}, ctx.Err()
-	case result := <-ch:
-		if result.err != nil {
-			return Message{}, result.err
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = f.conn.Close()
+		case <-done:
 		}
-		return f.parse(result.payload)
+	}()
+	_, payload, err := f.conn.ReadMessage()
+	close(done)
+
+	if err != nil {
+		if ctx.Err() != nil {
+			return Message{}, ctx.Err()
+		}
+		return Message{}, err
 	}
+	if ctx.Err() != nil {
+		return Message{}, ctx.Err()
+	}
+	return f.parse(payload)
 }
 
 func (f *BinanceDepthFeed) Reconnect(ctx context.Context) error {

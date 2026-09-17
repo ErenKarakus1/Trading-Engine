@@ -241,7 +241,7 @@ PostgreSQL persistence includes:
 * Accounts
 * Positions
 
-Kafka publishing is used for matching events through the `trading-engine-events` topic.
+Kafka is currently publisher-only in this repository. The API publishes matching events to the `trading-engine-events` topic for downstream services such as audit, analytics, settlement, or notifications. No Kafka consumer is implemented in this repo; PostgreSQL remains the source for recovery.
 
 PostgreSQL event and snapshot persistence completes before an order response is returned, so restart recovery can restore the order book, trade tape, and recent event history. Kafka publishing is asynchronous and is not used as the recovery source.
 
@@ -517,7 +517,7 @@ Metrics include:
 * Matching latency
 * WebSocket connections and messages
 * Market-data messages and reconnects
-* Kafka consumer lag gauge
+* Kafka consumer lag gauge placeholder for future consumers
 
 Prometheus and Grafana are included in Docker Compose.
 

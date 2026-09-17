@@ -280,6 +280,7 @@ input:disabled {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 16px;
+  align-items: start;
 }
 
 .module {
@@ -453,6 +454,10 @@ tbody tr:hover td {
   background: #f8fafc;
 }
 
+.data-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
 .empty,
 .empty-log {
   height: 96px;
@@ -492,6 +497,10 @@ tbody tr:hover td {
   color: var(--text);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.event-row:last-child {
+  border-bottom: 0;
 }
 
 @media (max-width: 1100px) {

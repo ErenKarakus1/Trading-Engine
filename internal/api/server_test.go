@@ -11,6 +11,7 @@ import (
 
 	"github.com/ErenKarakus1/Trading-Engine/internal/domain"
 	"github.com/ErenKarakus1/Trading-Engine/internal/matching"
+	"github.com/ErenKarakus1/Trading-Engine/internal/orderbook"
 	"github.com/ErenKarakus1/Trading-Engine/internal/ratelimit"
 	"github.com/ErenKarakus1/Trading-Engine/internal/risk"
 	"github.com/gin-gonic/gin"
@@ -140,6 +141,81 @@ func TestSeedOrdersPopulatesBookAndTrades(t *testing.T) {
 	}
 	if len(trades) != 1 || trades[0].Quantity != 3 {
 		t.Fatalf("trades = %+v, want one seeded trade quantity 3", trades)
+	}
+}
+
+func TestRestoreRebuildsBookAndTrades(t *testing.T) {
+	server := newTestServer(nil, nil)
+	snapshot := matching.Snapshot{
+		Symbol:   "BTC-USD",
+		Sequence: 1,
+		Orders: []orderbook.Order{
+			{ID: "resting-buy", Side: domain.SideBuy, Price: 100, Quantity: 5},
+		},
+	}
+	events := []matching.Event{
+		{
+			Type:     domain.EventTypeOrderAccepted,
+			Sequence: 2,
+			Order:    &matching.Order{ID: "sell-1", Symbol: "BTC-USD", Side: domain.SideSell, Type: domain.OrderTypeLimit, Price: 100, Quantity: 2},
+		},
+		{
+			Type:     domain.EventTypeTradeExecuted,
+			Sequence: 2,
+			Trade:    &matching.Trade{Sequence: 2, Symbol: "BTC-USD", MakerOrderID: "resting-buy", TakerOrderID: "sell-1", Price: 100, Quantity: 2},
+		},
+	}
+
+	if err := server.Restore(snapshot, events, nil); err != nil {
+		t.Fatalf("Restore() error = %v", err)
+	}
+
+	bookResponse := httptest.NewRecorder()
+	server.Router().ServeHTTP(bookResponse, httptest.NewRequest(http.MethodGet, "/orderbook/BTC-USD", nil))
+	var book orderBookResponse
+	if err := json.NewDecoder(bookResponse.Body).Decode(&book); err != nil {
+		t.Fatalf("Decode(book) error = %v", err)
+	}
+	if book.BestBid == nil || book.BestBid.Quantity != 3 {
+		t.Fatalf("BestBid = %+v, want quantity 3", book.BestBid)
+	}
+
+	tradesResponse := httptest.NewRecorder()
+	server.Router().ServeHTTP(tradesResponse, httptest.NewRequest(http.MethodGet, "/trades/BTC-USD", nil))
+	var trades []matching.Trade
+	if err := json.NewDecoder(tradesResponse.Body).Decode(&trades); err != nil {
+		t.Fatalf("Decode(trades) error = %v", err)
+	}
+	if len(trades) != 1 || trades[0].Quantity != 2 {
+		t.Fatalf("trades = %+v, want one restored trade quantity 2", trades)
+	}
+}
+
+func TestRestoreKeepsTradeTapeWhenSnapshotIsCurrent(t *testing.T) {
+	server := newTestServer(nil, nil)
+	snapshot := matching.Snapshot{
+		Symbol:   "BTC-USD",
+		Sequence: 2,
+		Orders: []orderbook.Order{
+			{ID: "resting-buy", Side: domain.SideBuy, Price: 100, Quantity: 3},
+		},
+	}
+	trades := []matching.Trade{
+		{Sequence: 2, Symbol: "BTC-USD", MakerOrderID: "resting-buy", TakerOrderID: "sell-1", Price: 100, Quantity: 2},
+	}
+
+	if err := server.Restore(snapshot, nil, trades); err != nil {
+		t.Fatalf("Restore() error = %v", err)
+	}
+
+	response := httptest.NewRecorder()
+	server.Router().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/trades/BTC-USD", nil))
+	var restored []matching.Trade
+	if err := json.NewDecoder(response.Body).Decode(&restored); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if len(restored) != 1 || restored[0].Quantity != 2 {
+		t.Fatalf("trades = %+v, want restored trade tape", restored)
 	}
 }
 

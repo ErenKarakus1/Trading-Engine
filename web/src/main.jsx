@@ -37,6 +37,39 @@ function diff(bid, ask) {
   return Number(ask) - Number(bid);
 }
 
+function tradeKey(trade) {
+  return [
+    valueOf(trade, "sequence", "Sequence"),
+    valueOf(trade, "maker_order_id", "MakerOrderID"),
+    valueOf(trade, "taker_order_id", "TakerOrderID"),
+  ].join(":");
+}
+
+function tradeSymbol(trade) {
+  return valueOf(trade, "symbol", "Symbol");
+}
+
+function eventType(event) {
+  return valueOf(event, "type", "Type");
+}
+
+function eventTrade(event) {
+  return valueOf(event, "trade", "Trade");
+}
+
+function mergeTrades(current, incoming, symbol) {
+  const next = [...current];
+  const seen = new Set(current.map(tradeKey));
+  for (const trade of incoming) {
+    if (tradeSymbol(trade) !== symbol) continue;
+    const key = tradeKey(trade);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push(trade);
+  }
+  return next;
+}
+
 function App() {
   const [symbol, setSymbol] = useState(DEFAULT_SYMBOL);
   const [symbolInput, setSymbolInput] = useState(DEFAULT_SYMBOL);
@@ -90,6 +123,13 @@ function App() {
       if (message.type === "snapshot" && message.book) setBook(message.book);
       if (message.type === "events") {
         setEvents((current) => [...message.events, ...current].slice(0, 120));
+        const newTrades = message.events
+          .filter((item) => eventType(item) === "trade_executed")
+          .map(eventTrade)
+          .filter(Boolean);
+        if (newTrades.length > 0) {
+          setTrades((current) => mergeTrades(current, newTrades, symbol));
+        }
         refresh(symbol).catch((err) => active && setError(err.message));
       }
     };

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 var Schema string
 
 var ErrNilDB = errors.New("nil db")
+var ErrSnapshotNotFound = errors.New("snapshot not found")
 
 type Store struct {
 	pool *pgxpool.Pool
@@ -56,6 +58,83 @@ func (s *Store) SaveSnapshot(ctx context.Context, snapshot matching.Snapshot) er
 	}
 	_, err = s.pool.Exec(ctx, insertSnapshotSQL, snapshot.Symbol, snapshot.Sequence, orders)
 	return err
+}
+
+func (s *Store) LatestSnapshot(ctx context.Context, symbol domain.Symbol) (matching.Snapshot, error) {
+	var snapshot matching.Snapshot
+	var ordersJSON []byte
+	row := s.pool.QueryRow(ctx, selectLatestSnapshotSQL, symbol)
+	if err := row.Scan(&snapshot.Symbol, &snapshot.Sequence, &ordersJSON); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return matching.Snapshot{}, ErrSnapshotNotFound
+		}
+		return matching.Snapshot{}, err
+	}
+	if err := json.Unmarshal(ordersJSON, &snapshot.Orders); err != nil {
+		return matching.Snapshot{}, err
+	}
+	return snapshot, nil
+}
+
+func (s *Store) EventsAfter(ctx context.Context, sequence domain.Sequence) ([]matching.Event, error) {
+	rows, err := s.pool.Query(ctx, selectEventsAfterSQL, sequence)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := make([]matching.Event, 0)
+	for rows.Next() {
+		var row eventQueryRow
+		if err := rows.Scan(
+			&row.Sequence,
+			&row.Index,
+			&row.Type,
+			&row.Symbol,
+			&row.OrderID,
+			&row.Side,
+			&row.OrderType,
+			&row.Price,
+			&row.Quantity,
+			&row.MakerOrderID,
+			&row.TakerOrderID,
+		); err != nil {
+			return nil, err
+		}
+		events = append(events, eventFromRow(row))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
+func (s *Store) TradesBySymbol(ctx context.Context, symbol domain.Symbol) ([]matching.Trade, error) {
+	rows, err := s.pool.Query(ctx, selectTradesBySymbolSQL, symbol)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	trades := make([]matching.Trade, 0)
+	for rows.Next() {
+		var trade matching.Trade
+		if err := rows.Scan(
+			&trade.Sequence,
+			&trade.Symbol,
+			&trade.MakerOrderID,
+			&trade.TakerOrderID,
+			&trade.Price,
+			&trade.Quantity,
+		); err != nil {
+			return nil, err
+		}
+		trades = append(trades, trade)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return trades, nil
 }
 
 func saveEvent(ctx context.Context, tx pgx.Tx, event matching.Event, index int) error {
@@ -173,6 +252,56 @@ type persistedEvent struct {
 	Quantity     any
 	MakerOrderID any
 	TakerOrderID any
+}
+
+type eventQueryRow struct {
+	Sequence     domain.Sequence
+	Index        int
+	Type         domain.EventType
+	Symbol       sql.NullString
+	OrderID      sql.NullString
+	Side         sql.NullString
+	OrderType    sql.NullString
+	Price        sql.NullInt64
+	Quantity     sql.NullInt64
+	MakerOrderID sql.NullString
+	TakerOrderID sql.NullString
+}
+
+func eventFromRow(row eventQueryRow) matching.Event {
+	event := matching.Event{
+		Type:     row.Type,
+		Sequence: row.Sequence,
+	}
+	switch row.Type {
+	case domain.EventTypeOrderAccepted, domain.EventTypeOrderRested:
+		event.Order = &matching.Order{
+			ID:       domain.OrderID(row.OrderID.String),
+			Symbol:   domain.Symbol(row.Symbol.String),
+			Side:     domain.Side(row.Side.String),
+			Type:     domain.OrderType(row.OrderType.String),
+			Price:    domain.Money(row.Price.Int64),
+			Quantity: domain.Quantity(row.Quantity.Int64),
+		}
+	case domain.EventTypeTradeExecuted:
+		event.Trade = &matching.Trade{
+			Sequence:     row.Sequence,
+			Symbol:       domain.Symbol(row.Symbol.String),
+			MakerOrderID: domain.OrderID(row.MakerOrderID.String),
+			TakerOrderID: domain.OrderID(row.TakerOrderID.String),
+			Price:        domain.Money(row.Price.Int64),
+			Quantity:     domain.Quantity(row.Quantity.Int64),
+		}
+	case domain.EventTypeOrderCanceled:
+		event.Cancel = &matching.CanceledOrder{
+			ID:       domain.OrderID(row.OrderID.String),
+			Symbol:   domain.Symbol(row.Symbol.String),
+			Side:     domain.Side(row.Side.String),
+			Price:    domain.Money(row.Price.Int64),
+			Quantity: domain.Quantity(row.Quantity.Int64),
+		}
+	}
+	return event
 }
 
 func eventRow(event matching.Event, index int) persistedEvent {

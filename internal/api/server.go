@@ -31,6 +31,7 @@ type RiskChecker interface {
 
 type EventStore interface {
 	SaveEvents(context.Context, []matching.Event) error
+	SaveSnapshot(context.Context, matching.Snapshot) error
 }
 
 type EventPublisher interface {
@@ -104,6 +105,25 @@ func (s *Server) SeedOrders(orders []matching.Order) error {
 		}
 		s.recordSubmit(result)
 	}
+	return nil
+}
+
+func (s *Server) Restore(snapshot matching.Snapshot, events []matching.Event, trades []matching.Trade) error {
+	if snapshot.Symbol != "" {
+		if err := s.matcher.Restore(snapshot); err != nil {
+			return err
+		}
+		s.restoreSnapshotRecords(snapshot)
+	}
+	if len(events) > 0 {
+		if err := s.matcher.Replay(events); err != nil {
+			return err
+		}
+		for _, event := range events {
+			s.recordEvent(event)
+		}
+	}
+	s.restoreTrades(trades)
 	return nil
 }
 
@@ -443,6 +463,93 @@ func (s *Server) recordCancel(result matching.CancelResult) {
 	s.orders[result.Order.ID] = record
 }
 
+func (s *Server) restoreSnapshotRecords(snapshot matching.Snapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, order := range snapshot.Orders {
+		s.orders[order.ID] = orderRecord{
+			Order: matching.Order{
+				ID:       order.ID,
+				Symbol:   snapshot.Symbol,
+				Side:     order.Side,
+				Type:     domain.OrderTypeLimit,
+				Price:    order.Price,
+				Quantity: order.Quantity,
+			},
+			Sequence:  snapshot.Sequence,
+			Remaining: order.Quantity,
+			Status:    "resting",
+		}
+	}
+}
+
+func (s *Server) restoreTrades(trades []matching.Trade) {
+	if len(trades) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.trades = append([]matching.Trade(nil), trades...)
+}
+
+func (s *Server) recordEvent(event matching.Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	switch event.Type {
+	case domain.EventTypeOrderAccepted:
+		if event.Order != nil {
+			s.orders[event.Order.ID] = orderRecord{
+				Order:     *event.Order,
+				Sequence:  event.Sequence,
+				Remaining: event.Order.Quantity,
+				Status:    "accepted",
+			}
+		}
+	case domain.EventTypeOrderRested:
+		if event.Order != nil {
+			record := s.orders[event.Order.ID]
+			record.Order = *event.Order
+			record.Sequence = event.Sequence
+			record.Remaining = event.Order.Quantity
+			record.Status = "resting"
+			s.orders[event.Order.ID] = record
+		}
+	case domain.EventTypeTradeExecuted:
+		if event.Trade != nil {
+			s.trades = append(s.trades, *event.Trade)
+			s.reduceRecordedOrder(event.Trade.MakerOrderID, event.Trade.Quantity, event.Sequence)
+			s.reduceRecordedOrder(event.Trade.TakerOrderID, event.Trade.Quantity, event.Sequence)
+		}
+	case domain.EventTypeOrderCanceled:
+		if event.Cancel != nil {
+			record := s.orders[event.Cancel.ID]
+			record.Sequence = event.Sequence
+			record.Remaining = 0
+			record.Status = "canceled"
+			s.orders[event.Cancel.ID] = record
+		}
+	}
+}
+
+func (s *Server) reduceRecordedOrder(orderID domain.OrderID, quantity domain.Quantity, sequence domain.Sequence) {
+	record, ok := s.orders[orderID]
+	if !ok {
+		return
+	}
+	record.Remaining -= quantity
+	if record.Remaining <= 0 {
+		record.Remaining = 0
+		record.Status = "filled"
+	} else {
+		record.Status = "partially_filled"
+	}
+	record.Sequence = sequence
+	s.orders[orderID] = record
+}
+
 func (s *Server) orderBookSnapshot(symbol domain.Symbol) websocketMessage {
 	book := orderBookResponse{Symbol: symbol}
 	if bid, ok := s.matcher.BestBid(symbol); ok {
@@ -504,21 +611,55 @@ func (s *Server) persistAndPublish(events []matching.Event) {
 	}
 
 	eventsCopy := append([]matching.Event(nil), events...)
-	go func() {
+	if s.eventStore != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		if s.eventStore != nil {
-			if err := s.eventStore.SaveEvents(ctx, eventsCopy); err != nil {
-				log.Printf("save events: %v", err)
+		if err := s.eventStore.SaveEvents(ctx, eventsCopy); err != nil {
+			log.Printf("save events: %v", err)
+		}
+		for _, symbol := range eventSymbols(eventsCopy) {
+			if err := s.eventStore.SaveSnapshot(ctx, s.matcher.Snapshot(symbol)); err != nil {
+				log.Printf("save snapshot: %v", err)
 			}
 		}
-		if s.publisher != nil {
+	}
+
+	if s.publisher != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
 			if err := s.publisher.PublishEvents(ctx, eventsCopy); err != nil {
 				log.Printf("publish events: %v", err)
 			}
+		}()
+	}
+}
+
+func eventSymbols(events []matching.Event) []domain.Symbol {
+	seen := make(map[domain.Symbol]struct{})
+	symbols := make([]domain.Symbol, 0)
+	for _, event := range events {
+		var symbol domain.Symbol
+		switch {
+		case event.Order != nil:
+			symbol = event.Order.Symbol
+		case event.Trade != nil:
+			symbol = event.Trade.Symbol
+		case event.Cancel != nil:
+			symbol = event.Cancel.Symbol
 		}
-	}()
+		if symbol == "" {
+			continue
+		}
+		if _, ok := seen[symbol]; ok {
+			continue
+		}
+		seen[symbol] = struct{}{}
+		symbols = append(symbols, symbol)
+	}
+	return symbols
 }
 
 func (s *Server) metricsMiddleware() gin.HandlerFunc {

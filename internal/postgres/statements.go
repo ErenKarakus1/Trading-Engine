@@ -88,3 +88,33 @@ INSERT INTO engine_snapshots (
     orders
 ) VALUES ($1, $2, $3)
 ON CONFLICT (symbol, sequence) DO NOTHING`
+
+const selectLatestSnapshotSQL = `
+SELECT symbol, sequence, orders
+FROM engine_snapshots
+WHERE symbol = $1
+ORDER BY sequence DESC
+LIMIT 1`
+
+const selectEventsAfterSQL = `
+SELECT
+    sequence,
+    event_index,
+    event_type,
+    symbol,
+    order_id,
+    side,
+    order_type,
+    price,
+    quantity,
+    maker_order_id,
+    taker_order_id
+FROM engine_events
+WHERE sequence > $1
+ORDER BY sequence, event_index`
+
+const selectTradesBySymbolSQL = `
+SELECT sequence, symbol, maker_order_id, taker_order_id, price, quantity
+FROM trades
+WHERE symbol = $1
+ORDER BY sequence, trade_index`

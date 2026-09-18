@@ -159,8 +159,10 @@ Trading-Engine/
 |   `-- grafana/
 |
 |-- docker-compose.yml
+|-- .env.example
 |-- Dockerfile
 |-- go.mod
+|-- LICENSE
 `-- README.md
 ```
 

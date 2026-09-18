@@ -184,9 +184,8 @@ func startBinanceMarketData(ctx context.Context, server *api.Server, symbol doma
 
 	syncer := marketdata.NewSyncer(book, feed)
 	go func() {
-		if err := syncer.Run(context.Background()); err != nil {
-			log.Printf("binance market data stopped for %s: %v", symbol, err)
-		}
+		err := syncer.Run(context.Background())
+		log.Printf("binance market data stopped for %s: %v", symbol, err)
 	}()
 }
 
